@@ -11,6 +11,14 @@ import (
 	// "sync"
 )
 
+type server struct {
+	listener net.Listener
+	doc      Doc
+
+	// handler  map[string]HandleFunc
+	// m sync.RWMutex
+}
+
 /*** row operations ***/
 
 func NewServer() *server {

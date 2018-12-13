@@ -2,7 +2,7 @@ package main
 
 // Most of these are based on a stripped down version of
 // the text editor of https://viewsourcecode.org/snaptoken/kilo/ which
-// is based on antirez's kil
+// is based on antirez's kilo
 
 import (
 	"bufio"
@@ -11,74 +11,39 @@ import (
 	"io"
 	"log"
 	"net"
-	// "sync"
+	"sync"
 )
 
-/*** row operations ***/
-
-func (gp *gopad) editorInsertRow(at int, s string) {
-	// gp.rows = append(gp.rows, erow{Chars: s})
-	gp.rows = append(gp.rows, erow{})
-	copy(gp.rows[at+1:], gp.rows[at:])
-	gp.rows[at] = erow{Chars: s}
-	// gp.rows[gp.numrows].render = renderRow(s)
-	gp.numrows++
-}
-
-func (gp *gopad) rowInsertRune(key rune) {
-	row := &gp.rows[gp.cy]
-
-	at := gp.cx
-	if at < 0 || at > len(row.Chars) {
-		at = len(row.Chars)
-	}
-
-	s := row.Chars[0:gp.cx]
-	s += string(key)
-	s += row.Chars[gp.cx:]
-	row.Chars = s
-}
-
-func (gp *gopad) rowDelRune() {
-	row := &gp.rows[gp.cy]
-
-	at := gp.cx
-	if at < 0 || at > len(row.Chars) {
-		at = len(row.Chars)
-	}
-
-	s := row.Chars[0:gp.cx-1] + row.Chars[gp.cx:]
-	row.Chars = s
-}
-
-func (gp *gopad) editorDelRow() {
-	if gp.cy < 0 || gp.cy >= gp.numrows {
-		return
-	}
-
-	gp.rows[gp.cy-1].Chars += gp.rows[gp.cy].Chars
-	copy(gp.rows[gp.cy:], gp.rows[gp.cy+1:])
-	gp.rows = gp.rows[:len(gp.rows)-1]
-	gp.numrows--
+type gopad struct {
+	screenrows int
+	screencols int
+	rowoff     int
+	coloff     int
+	// rx         int
+	cx  int
+	cy  int
+	doc Doc
+	buf *bufio.ReadWriter
+	mu  sync.Mutex
 }
 
 /*** editor operations ***/
 
 func (gp *gopad) editorInsertRune(key rune) {
-	if gp.cy == gp.numrows {
-		gp.editorInsertRow(gp.cy, "")
+	if gp.cy == gp.doc.numrows {
+		gp.doc.insertRow(gp.cy, "")
 	}
 
-	gp.rowInsertRune(key)
+	gp.doc.rowInsertRune(gp.cx, gp.cy, key)
 	gp.cx++
 }
 
 func (gp *gopad) editorInsertNewLine() {
 	if gp.cx == 0 {
-		gp.editorInsertRow(gp.cy, "")
+		gp.doc.insertRow(gp.cy, "")
 	} else {
-		row := &gp.rows[gp.cy]
-		gp.editorInsertRow(gp.cy+1, row.Chars[gp.cx:])
+		row := &gp.doc.Rows[gp.cy]
+		gp.doc.insertRow(gp.cy+1, row.Chars[gp.cx:])
 		row.Chars = row.Chars[:gp.cx]
 	}
 	gp.cy++
@@ -86,7 +51,7 @@ func (gp *gopad) editorInsertNewLine() {
 }
 
 func (gp *gopad) editorDelRune() {
-	if gp.cy == gp.numrows {
+	if gp.cy == gp.doc.numrows {
 		return
 	}
 	if gp.cx == 0 && gp.cy == 0 {
@@ -94,11 +59,11 @@ func (gp *gopad) editorDelRune() {
 	}
 
 	if gp.cx > 0 {
-		gp.rowDelRune()
+		gp.doc.rowDelRune(gp.cx, gp.cy)
 		gp.cx--
 	} else {
-		gp.cx = len(gp.rows[gp.cy-1].Chars)
-		gp.editorDelRow()
+		gp.cx = len(gp.doc.Rows[gp.cy-1].Chars)
+		gp.doc.editorDelRow(gp.cy)
 		gp.cy--
 	}
 }
@@ -121,7 +86,7 @@ func (gp *gopad) editorOpen() {
 
 	// scanner := bufio.NewScanner(file)
 	for _, row := range d.Rows {
-		gp.editorInsertRow(gp.numrows, row.Chars)
+		gp.doc.insertRow(gp.doc.numrows, row.Chars)
 	}
 }
 
@@ -129,8 +94,8 @@ func (gp *gopad) editorOpen() {
 
 func (gp *gopad) editorScroll() {
 	// gp.rx = 0
-	// if gp.cy < gp.numrows {
-	// 	gp.rx = editorRowCxToRx(&gp.rows[gp.cy], gp.cx)
+	// if gp.cy < gp.doc.numrows {
+	// 	gp.rx = editorRowCxToRx(&gp.doc.Rows[gp.cy], gp.cx)
 	// }
 
 	// reposition up
@@ -158,10 +123,10 @@ func (gp *gopad) drawRows() {
 	i := 0
 	for ; i < gp.screenrows; i++ {
 		filerow := i + gp.rowoff
-		if filerow < gp.numrows {
+		if filerow < gp.doc.numrows {
 			termbox.SetCell(0, i, '~', coldef, coldef)
 			x := 0
-			for k, s := range gp.rows[filerow].Chars {
+			for k, s := range gp.doc.Rows[filerow].Chars {
 				if k >= gp.coloff {
 					termbox.SetCell(x+1, i, s, coldef, coldef)
 					x++
@@ -199,8 +164,8 @@ func (gp *gopad) refreshScreen() {
 
 func (gp *gopad) editorMoveCursor(key termbox.Key) {
 	var row *erow
-	if gp.cy < gp.numrows {
-		row = &gp.rows[gp.cy]
+	if gp.cy < gp.doc.numrows {
+		row = &gp.doc.Rows[gp.cy]
 	} else {
 		row = nil
 	}
@@ -218,10 +183,10 @@ func (gp *gopad) editorMoveCursor(key termbox.Key) {
 			gp.cx--
 		} else if gp.cy > 0 {
 			gp.cy--
-			gp.cx = len(gp.rows[gp.cy].Chars)
+			gp.cx = len(gp.doc.Rows[gp.cy].Chars)
 		}
 	case termbox.KeyArrowDown:
-		if gp.cy < gp.numrows {
+		if gp.cy < gp.doc.numrows {
 			gp.cy++
 		}
 	case termbox.KeyArrowUp:
@@ -231,8 +196,8 @@ func (gp *gopad) editorMoveCursor(key termbox.Key) {
 	}
 
 	rowlen := 0
-	if gp.cy < gp.numrows {
-		rowlen = len(gp.rows[gp.cy].Chars)
+	if gp.cy < gp.doc.numrows {
+		rowlen = len(gp.doc.Rows[gp.cy].Chars)
 	}
 	if rowlen < 0 {
 		rowlen = 0
@@ -262,6 +227,7 @@ func StartClient(server string) {
 
 	conn, err := net.Dial("tcp", server+Port)
 	if err != nil {
+		termbox.Close()
 		log.Fatal("Couldn't dial")
 	}
 	defer conn.Close()
@@ -295,8 +261,8 @@ mainloop:
 			case termbox.KeyHome:
 				gp.cx = 0
 			case termbox.KeyEnd:
-				if gp.cy < gp.numrows {
-					gp.cx = len(gp.rows[gp.cy].Chars)
+				if gp.cy < gp.doc.numrows {
+					gp.cx = len(gp.doc.Rows[gp.cy].Chars)
 				}
 			case termbox.KeyBackspace, termbox.KeyBackspace2:
 				gp.editorDelRune()
