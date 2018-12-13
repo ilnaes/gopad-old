@@ -1,5 +1,9 @@
 package main
 
+// Most of these are based on a stripped down version of
+// the text editor of https://viewsourcecode.org/snaptoken/kilo/ which
+// is based on antirez's kil
+
 import (
 	"bufio"
 	"encoding/gob"
