@@ -6,11 +6,12 @@ package main
 
 import (
 	"bufio"
+	"bytes"
 	"encoding/gob"
 	"github.com/nsf/termbox-go"
 	"io"
 	"log"
-	"net"
+	"net/rpc"
 	"sync"
 )
 
@@ -70,23 +71,31 @@ func (gp *gopad) editorDelRune() {
 
 /*** file i/o ***/
 
-func (gp *gopad) editorOpen() {
+func (gp *gopad) editorOpen(server string) {
 	// file, err := os.Open("test")
 	// if err != nil {
 	// 	log.Fatal(err)
 	// }
 	// defer file.Close()
 	var d Doc
-	dec := gob.NewDecoder(gp.buf)
-	err := dec.Decode(&d)
-	if err != nil {
-		termbox.Close()
-		log.Fatal("Couldn't decode document")
-	}
+	var reply Reply
+	ok := call(server, "Server.Init", Args{}, &reply)
+	if ok {
+		buf := bytes.NewBuffer(reply.Data)
+		dec := gob.NewDecoder(buf)
+		err := dec.Decode(&d)
 
-	// scanner := bufio.NewScanner(file)
-	for _, row := range d.Rows {
-		gp.doc.insertRow(gp.doc.numrows, row.Chars)
+		if err != nil {
+			termbox.Close()
+			log.Fatal("Couldn't decode document")
+		}
+
+		// scanner := bufio.NewScanner(file)
+		for _, row := range d.Rows {
+			gp.doc.insertRow(gp.doc.numrows, row.Chars)
+		}
+	} else {
+		log.Println("Not ok call")
 	}
 }
 
@@ -225,18 +234,18 @@ func StartClient(server string) {
 
 	var gp gopad
 
-	conn, err := net.Dial("tcp", server+Port)
-	if err != nil {
-		termbox.Close()
-		log.Fatal("Couldn't dial")
-	}
-	defer conn.Close()
-	gp.buf = bufio.NewReadWriter(bufio.NewReader(conn), bufio.NewWriter(conn))
+	// conn, err := net.Dial("tcp", server+Port)
+	// if err != nil {
+	// 	termbox.Close()
+	// 	log.Fatal("Couldn't dial")
+	// }
+	// defer conn.Close()
+	// gp.buf = bufio.NewReadWriter(bufio.NewReader(conn), bufio.NewWriter(conn))
 
 	gp.initEditor()
-	gp.editorOpen()
+	gp.editorOpen(server + ":6060")
 
-	go gp.poll()
+	// go gp.poll()
 
 	gp.refreshScreen()
 mainloop:
@@ -278,8 +287,16 @@ mainloop:
 			default:
 				if ev.Ch != 0 {
 					// gp.editorInsertRune(ev.Ch)
-					gp.buf.WriteString(string(ev.Ch) + "\n")
-					gp.buf.Flush()
+					// gp.buf.WriteString(string(ev.Ch) + "\n")
+					// gp.buf.Flush()
+					var reply Reply
+					arg := Args{Op: "Insert"}
+					arg.Data = []byte(string(ev.Ch))
+					ok := call(server+":6060", "Server.Commit", arg, &reply)
+					if !ok {
+						log.Fatal("Couldn't commit!")
+					}
+					gp.editorInsertRune(ev.Ch)
 				}
 			}
 		case termbox.EventError:
@@ -287,6 +304,25 @@ mainloop:
 		}
 		gp.refreshScreen()
 	}
+}
+
+// rpc caller
+func call(srv string, rpcname string,
+	args interface{}, reply interface{}) bool {
+	c, errx := rpc.DialHTTP("tcp", srv)
+	if errx != nil {
+		log.Println("Couldn't connect to", srv)
+		return false
+	}
+	defer c.Close()
+
+	err := c.Call(rpcname, args, reply)
+	if err != nil {
+		log.Println("Couldn't call", err)
+		return false
+	}
+
+	return true
 }
 
 func (gp *gopad) poll() {

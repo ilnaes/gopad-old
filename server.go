@@ -2,16 +2,19 @@ package main
 
 import (
 	"bufio"
+	"bytes"
 	"encoding/gob"
 	"io"
 	"log"
 	"net"
+	"net/http"
+	"net/rpc"
 	"os"
 	"strings"
 	// "sync"
 )
 
-type server struct {
+type Server struct {
 	listener net.Listener
 	doc      Doc
 
@@ -19,16 +22,14 @@ type server struct {
 	// m sync.RWMutex
 }
 
-/*** row operations ***/
-
-func NewServer() *server {
+func NewServer() *Server {
 	file, err := os.Open("test")
 	if err != nil {
 		log.Fatal(err)
 	}
 	defer file.Close()
 
-	e := server{doc: Doc{}}
+	e := Server{doc: Doc{}}
 	scanner := bufio.NewScanner(file)
 	for scanner.Scan() {
 		e.doc.Rows = append(e.doc.Rows, erow{Chars: scanner.Text()})
@@ -37,7 +38,7 @@ func NewServer() *server {
 	return &e
 }
 
-func (e *server) handle(conn net.Conn) {
+func (e *Server) handle(conn net.Conn) {
 	defer conn.Close()
 
 	// send initial document
@@ -70,23 +71,52 @@ func (e *server) handle(conn net.Conn) {
 	}
 }
 
-func (e *server) Listen() error {
-	var err error
-	e.listener, err = net.Listen("tcp", Port)
+func (s *Server) Commit(arg *Args, reply *Reply) error {
+	log.Println("Got rune", string(arg.Data))
+	reply.Err = "OK"
+	return nil
+}
+
+func (s *Server) Init(arg *Args, reply *Reply) error {
+	log.Println("Sending initial...")
+
+	var buf bytes.Buffer
+	enc := gob.NewEncoder(&buf)
+	err := enc.Encode(s.doc)
+	reply.Data = buf.Bytes()
+
+	if err != nil {
+		log.Println("Couldn't send document", err)
+		reply.Err = "Encode"
+		return nil
+	}
+	return nil
+}
+
+func (s *Server) start() {
+	err := rpc.Register(s)
+	if err != nil {
+		log.Fatal("Couldn't register RPC", err)
+	}
+	rpc.HandleHTTP()
+
+	s.listener, err = net.Listen("tcp", Port)
 	if err != nil {
 		log.Fatal("Couldn't listen")
 	}
 
-	log.Println("Listening on", e.listener.Addr().String())
+	log.Println("Listening on", s.listener.Addr().String())
 
-	for {
-		log.Println("Accepting requests")
-		conn, err := e.listener.Accept()
-		if err != nil {
-			log.Println("Failed to accept")
-			continue
-		}
-		log.Println("Got a connection")
-		go e.handle(conn)
-	}
+	http.Serve(s.listener, nil)
+
+	// for {
+	// 	log.Println("Accepting requests")
+	// 	conn, err := e.listener.Accept()
+	// 	if err != nil {
+	// 		log.Println("Failed to accept")
+	// 		continue
+	// 	}
+	// 	log.Println("Got a connection")
+	// 	go e.handle(conn)
+	// }
 }

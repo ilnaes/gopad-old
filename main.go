@@ -8,7 +8,7 @@ import (
 func main() {
 	if len(os.Args) == 1 {
 		s := NewServer()
-		s.Listen()
+		s.start()
 	} else {
 		StartClient(os.Args[1])
 	}

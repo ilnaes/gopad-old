@@ -1,6 +1,7 @@
 package main
 
 // import (
+// 	"bytes"
 // "bufio"
 // "net"
 // "sync"
@@ -9,6 +10,8 @@ package main
 const (
 	Port = ":6060"
 )
+
+type Err string
 
 type erow struct {
 	Chars string
@@ -19,6 +22,16 @@ type Doc struct {
 	Rows []erow
 	// optional really
 	numrows int
+}
+
+type Args struct {
+	Op   string
+	Data []byte
+}
+
+type Reply struct {
+	Data []byte
+	Err  Err
 }
 
 /*** row operations ***/
