@@ -6,14 +6,17 @@ package main
 
 import (
 	"bufio"
-	"bytes"
-	"encoding/gob"
+	"encoding/json"
 	"github.com/nsf/termbox-go"
 	"io"
 	"log"
+	"math/rand"
 	"net/rpc"
 	"sync"
+	"time"
 )
+
+const commitDelay = 1 * time.Second
 
 type gopad struct {
 	screenrows int
@@ -21,17 +24,20 @@ type gopad struct {
 	rowoff     int
 	coloff     int
 	// rx         int
-	cx  int
-	cy  int
-	doc Doc
-	buf *bufio.ReadWriter
-	mu  sync.Mutex
+	cx          int
+	cy          int
+	doc         Doc
+	buf         *bufio.ReadWriter
+	mu          sync.Mutex
+	id          int64
+	commits     []Commit
+	commitpoint int
 }
 
 /*** editor operations ***/
 
 func (gp *gopad) editorInsertRune(key rune) {
-	if gp.cy == gp.doc.numrows {
+	if gp.cy == gp.doc.Numrows {
 		gp.doc.insertRow(gp.cy, "")
 	}
 
@@ -52,7 +58,7 @@ func (gp *gopad) editorInsertNewLine() {
 }
 
 func (gp *gopad) editorDelRune() {
-	if gp.cy == gp.doc.numrows {
+	if gp.cy == gp.doc.Numrows {
 		return
 	}
 	if gp.cx == 0 && gp.cy == 0 {
@@ -71,31 +77,29 @@ func (gp *gopad) editorDelRune() {
 
 /*** file i/o ***/
 
+// get file from server
 func (gp *gopad) editorOpen(server string) {
 	// file, err := os.Open("test")
 	// if err != nil {
 	// 	log.Fatal(err)
 	// }
 	// defer file.Close()
-	var d Doc
-	var reply Reply
-	ok := call(server, "Server.Init", Args{}, &reply)
-	if ok {
-		buf := bytes.NewBuffer(reply.Data)
-		dec := gob.NewDecoder(buf)
-		err := dec.Decode(&d)
 
+	var reply Reply
+	ok := call(server, "Server.Handle", Arg{Op: "Init"}, &reply)
+	if ok {
+		var d Doc
+		err := json.Unmarshal(reply.Data, &d)
 		if err != nil {
-			termbox.Close()
 			log.Fatal("Couldn't decode document")
 		}
 
 		// scanner := bufio.NewScanner(file)
 		for _, row := range d.Rows {
-			gp.doc.insertRow(gp.doc.numrows, row.Chars)
+			gp.doc.insertRow(gp.doc.Numrows, row.Chars)
 		}
 	} else {
-		log.Println("Not ok call")
+		log.Fatal("Not ok call")
 	}
 }
 
@@ -103,7 +107,7 @@ func (gp *gopad) editorOpen(server string) {
 
 func (gp *gopad) editorScroll() {
 	// gp.rx = 0
-	// if gp.cy < gp.doc.numrows {
+	// if gp.cy < gp.doc.Numrows {
 	// 	gp.rx = editorRowCxToRx(&gp.doc.Rows[gp.cy], gp.cx)
 	// }
 
@@ -132,7 +136,7 @@ func (gp *gopad) drawRows() {
 	i := 0
 	for ; i < gp.screenrows; i++ {
 		filerow := i + gp.rowoff
-		if filerow < gp.doc.numrows {
+		if filerow < gp.doc.Numrows {
 			termbox.SetCell(0, i, '~', coldef, coldef)
 			x := 0
 			for k, s := range gp.doc.Rows[filerow].Chars {
@@ -173,7 +177,7 @@ func (gp *gopad) refreshScreen() {
 
 func (gp *gopad) editorMoveCursor(key termbox.Key) {
 	var row *erow
-	if gp.cy < gp.doc.numrows {
+	if gp.cy < gp.doc.Numrows {
 		row = &gp.doc.Rows[gp.cy]
 	} else {
 		row = nil
@@ -195,7 +199,7 @@ func (gp *gopad) editorMoveCursor(key termbox.Key) {
 			gp.cx = len(gp.doc.Rows[gp.cy].Chars)
 		}
 	case termbox.KeyArrowDown:
-		if gp.cy < gp.doc.numrows {
+		if gp.cy < gp.doc.Numrows {
 			gp.cy++
 		}
 	case termbox.KeyArrowUp:
@@ -205,7 +209,7 @@ func (gp *gopad) editorMoveCursor(key termbox.Key) {
 	}
 
 	rowlen := 0
-	if gp.cy < gp.doc.numrows {
+	if gp.cy < gp.doc.Numrows {
 		rowlen = len(gp.doc.Rows[gp.cy].Chars)
 	}
 	if rowlen < 0 {
@@ -225,6 +229,10 @@ func (gp *gopad) initEditor() {
 }
 
 func StartClient(server string) {
+	var gp gopad
+	gp.id = rand.Int63()
+	gp.editorOpen(server + Port)
+
 	err := termbox.Init()
 	if err != nil {
 		panic(err)
@@ -232,20 +240,9 @@ func StartClient(server string) {
 	defer termbox.Close()
 	termbox.SetInputMode(termbox.InputEsc)
 
-	var gp gopad
-
-	// conn, err := net.Dial("tcp", server+Port)
-	// if err != nil {
-	// 	termbox.Close()
-	// 	log.Fatal("Couldn't dial")
-	// }
-	// defer conn.Close()
-	// gp.buf = bufio.NewReadWriter(bufio.NewReader(conn), bufio.NewWriter(conn))
-
 	gp.initEditor()
-	gp.editorOpen(server + ":6060")
 
-	// go gp.poll()
+	go gp.push(server + Port)
 
 	gp.refreshScreen()
 mainloop:
@@ -270,7 +267,7 @@ mainloop:
 			case termbox.KeyHome:
 				gp.cx = 0
 			case termbox.KeyEnd:
-				if gp.cy < gp.doc.numrows {
+				if gp.cy < gp.doc.Numrows {
 					gp.cx = len(gp.doc.Rows[gp.cy].Chars)
 				}
 			case termbox.KeyBackspace, termbox.KeyBackspace2:
@@ -286,16 +283,10 @@ mainloop:
 				gp.editorInsertNewLine()
 			default:
 				if ev.Ch != 0 {
-					// gp.editorInsertRune(ev.Ch)
-					// gp.buf.WriteString(string(ev.Ch) + "\n")
-					// gp.buf.Flush()
-					var reply Reply
-					arg := Args{Op: "Insert"}
-					arg.Data = []byte(string(ev.Ch))
-					ok := call(server+":6060", "Server.Commit", arg, &reply)
-					if !ok {
-						log.Fatal("Couldn't commit!")
-					}
+					gp.mu.Lock()
+					gp.commits = append(gp.commits, Commit{Op: "Insert", X: gp.cx,
+						Y: gp.cy, ID: rand.Int63(), Data: ev.Ch})
+					gp.mu.Unlock()
 					gp.editorInsertRune(ev.Ch)
 				}
 			}
@@ -307,9 +298,8 @@ mainloop:
 }
 
 // rpc caller
-func call(srv string, rpcname string,
-	args interface{}, reply interface{}) bool {
-	c, errx := rpc.DialHTTP("tcp", srv)
+func call(srv string, rpcname string, args interface{}, reply interface{}) bool {
+	c, errx := rpc.Dial("tcp", srv)
 	if errx != nil {
 		log.Println("Couldn't connect to", srv)
 		return false
@@ -318,14 +308,47 @@ func call(srv string, rpcname string,
 
 	err := c.Call(rpcname, args, reply)
 	if err != nil {
-		log.Println("Couldn't call", err)
+		log.Println(err)
 		return false
 	}
-
 	return true
 }
 
-func (gp *gopad) poll() {
+// commit pusher
+func (gp *gopad) push(srv string) {
+	for {
+		gp.mu.Lock()
+		if len(gp.commits) <= gp.commitpoint {
+			gp.mu.Unlock()
+			time.Sleep(commitDelay)
+			continue
+		}
+		buf, err := json.Marshal(gp.commits[gp.commitpoint:len(gp.commits)])
+		newpoint := len(gp.commits)
+		gp.mu.Unlock()
+		if err != nil {
+			log.Println("Couldn't marshal commits", err)
+			time.Sleep(commitDelay)
+			continue
+		}
+
+		arg := Arg{Op: "Commit", Data: buf}
+
+		ok := false
+		for !ok {
+			var reply Reply
+			ok = call(srv, "Server.Handle", arg, &reply)
+			if ok && reply.Err == "OK" {
+				gp.mu.Lock()
+				gp.commitpoint = newpoint
+				gp.mu.Unlock()
+			}
+		}
+		time.Sleep(time.Millisecond)
+	}
+}
+
+func (gp *gopad) pull() {
 	for {
 		r, _, err := gp.buf.ReadRune()
 		switch {

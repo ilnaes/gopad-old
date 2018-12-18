@@ -18,13 +18,29 @@ type erow struct {
 	// render string
 }
 
-type Doc struct {
-	Rows []erow
-	// optional really
-	numrows int
+type pos struct {
+	X, Y int
 }
 
-type Args struct {
+type Doc struct {
+	Rows    []erow
+	View    int
+	Cursors []pos
+
+	// optional really
+	Numrows int
+}
+
+type Commit struct {
+	Op     string
+	Data   rune
+	X, Y   int
+	View   int
+	ID     int64
+	Client int
+}
+
+type Arg struct {
 	Op   string
 	Data []byte
 }
@@ -41,8 +57,8 @@ func (doc *Doc) insertRow(at int, s string) {
 	doc.Rows = append(doc.Rows, erow{})
 	copy(doc.Rows[at+1:], doc.Rows[at:])
 	doc.Rows[at] = erow{Chars: s}
-	// doc.Rows[doc.numrows].render = renderRow(s)
-	doc.numrows++
+	// doc.Rows[doc.Numrows].render = renderRow(s)
+	doc.Numrows++
 }
 
 func (doc *Doc) rowInsertRune(atx, aty int, key rune) {
@@ -70,12 +86,12 @@ func (doc *Doc) rowDelRune(atx, aty int) {
 }
 
 func (doc *Doc) editorDelRow(at int) {
-	if at < 0 || at >= doc.numrows {
+	if at < 0 || at >= doc.Numrows {
 		return
 	}
 
 	doc.Rows[at-1].Chars += doc.Rows[at].Chars
 	copy(doc.Rows[at:], doc.Rows[at+1:])
 	doc.Rows = doc.Rows[:len(doc.Rows)-1]
-	doc.numrows--
+	doc.Numrows--
 }
