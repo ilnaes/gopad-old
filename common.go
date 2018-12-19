@@ -5,6 +5,7 @@ package main
 // "bufio"
 // "net"
 // "sync"
+// "log"
 // )
 
 const (
@@ -15,6 +16,7 @@ type Err string
 
 type erow struct {
 	Chars string
+	Temp  []bool
 	// render string
 }
 
@@ -31,12 +33,12 @@ type Doc struct {
 	Numrows int
 }
 
-type Commit struct {
+type Op struct {
 	Op     string
 	Data   rune
 	X, Y   int
 	View   int
-	ID     int64
+	ID     int
 	Client int
 }
 
@@ -52,16 +54,17 @@ type Reply struct {
 
 /*** row operations ***/
 
-func (doc *Doc) insertRow(at int, s string) {
+func (doc *Doc) insertRow(at int, s string, t []bool) {
 	// doc.Rows = append(doc.Rows, erow{Chars: s})
 	doc.Rows = append(doc.Rows, erow{})
 	copy(doc.Rows[at+1:], doc.Rows[at:])
-	doc.Rows[at] = erow{Chars: s}
+	doc.Rows[at] = erow{Chars: s, Temp: t}
 	// doc.Rows[doc.Numrows].render = renderRow(s)
 	doc.Numrows++
 }
 
-func (doc *Doc) rowInsertRune(atx, aty int, key rune) {
+// insert rune into row[aty] at position atx
+func (doc *Doc) rowInsertRune(atx, aty int, key rune, temp bool) {
 	row := &doc.Rows[aty]
 
 	if atx < 0 || atx > len(row.Chars) {
@@ -72,8 +75,13 @@ func (doc *Doc) rowInsertRune(atx, aty int, key rune) {
 	s += string(key)
 	s += row.Chars[atx:]
 	row.Chars = s
+
+	row.Temp = append(row.Temp, false)
+	copy(row.Temp[atx:], row.Temp[atx+1:])
+	row.Temp[atx] = temp
 }
 
+// delete a rune
 func (doc *Doc) rowDelRune(atx, aty int) {
 	row := &doc.Rows[aty]
 
@@ -81,8 +89,8 @@ func (doc *Doc) rowDelRune(atx, aty int) {
 		atx = len(row.Chars)
 	}
 
-	s := row.Chars[0:atx-1] + row.Chars[atx:]
-	row.Chars = s
+	row.Chars = row.Chars[0:atx-1] + row.Chars[atx:]
+	row.Temp = append(row.Temp[0:atx-1], row.Temp[atx:]...)
 }
 
 func (doc *Doc) editorDelRow(at int) {

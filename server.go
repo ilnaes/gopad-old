@@ -12,12 +12,12 @@ import (
 )
 
 type Server struct {
-	listener net.Listener
-	commits  []Commit
-	doc      Doc
-	view     int
-	px       Paxos
-	mu       sync.Mutex
+	listener  net.Listener
+	commitLog []Op
+	doc       Doc
+	view      int
+	px        Paxos
+	mu        sync.Mutex
 
 	// handler  map[string]HandleFunc
 	// m sync.RWMutex
@@ -30,69 +30,40 @@ func NewServer() *Server {
 	}
 	defer file.Close()
 
-	e := Server{doc: Doc{}, commits: make([]Commit, 0)}
+	e := Server{doc: Doc{}, commitLog: make([]Op, 0)}
 	scanner := bufio.NewScanner(file)
 	for scanner.Scan() {
-		e.doc.Rows = append(e.doc.Rows, erow{Chars: scanner.Text()})
+		e.doc.Rows = append(e.doc.Rows, erow{Chars: scanner.Text(), Temp: make([]bool, len(scanner.Text()))})
 	}
 
 	return &e
 }
 
-// func (s *Server) handle(conn net.Conn) {
-// 	defer conn.Close()
-
-// 	// send initial document
-// 	enc := gob.NewEncoder(conn)
-// 	err := enc.Encode(s.doc)
-// 	if err != nil {
-// 		conn.Close()
-// 		log.Println("Couldn't send document", err)
-// 		return
-// 	}
-// 	rw := bufio.NewReadWriter(bufio.NewReader(conn), bufio.NewWriter(conn))
-
-// 	for {
-// 		// wait for command
-// 		log.Print("Waiting to receive")
-// 		cmd, err := rw.ReadString('\n')
-// 		switch {
-// 		case err == io.EOF:
-// 			log.Println("Reached EOF")
-// 			return
-// 		case err != nil:
-// 			log.Println("Error reading")
-// 			return
-// 		}
-
-// 		cmd = strings.Trim(cmd, "\n ")
-// 		log.Println("Received:", cmd)
-// 		rw.WriteString(cmd)
-// 		rw.Flush()
-// 	}
-// }
-
-func (s *Server) handleCommit(commits []Commit) {
-	log.Println("Got", len(commits), "runes")
-	for _, c := range commits {
-		log.Println(string(c.Data))
+func (s *Server) handleOp(ops []Op) {
+	log.Println("Got", len(ops), "ops")
+	s.mu.Lock()
+	for _, c := range ops {
+		log.Println(c)
+		s.commitLog = append(s.commitLog, c)
 	}
+	s.mu.Unlock()
 }
 
 func (s *Server) Handle(arg Arg, reply *Reply) error {
 	switch arg.Op {
-	case "Commit":
+	case "Op":
 		// unmarshal commit array
-		var commits []Commit
-		err := json.Unmarshal(arg.Data, &commits)
+		var ops []Op
+		err := json.Unmarshal(arg.Data, &ops)
 		if err != nil {
-			log.Println("Couldn't unmarshal commits", err)
+			log.Println("Couldn't unmarshal ops", err)
 			reply.Err = "Encode"
 			return nil
 		}
-		go s.handleCommit(commits)
+		go s.handleOp(ops)
 
 		reply.Err = "OK"
+
 	case "Init":
 		log.Println("Sending initial...")
 
@@ -104,6 +75,8 @@ func (s *Server) Handle(arg Arg, reply *Reply) error {
 			return nil
 		}
 		reply.Data = buf
+		reply.Err = "OK"
+
 	case "Query":
 		log.Println("Sending query...")
 
@@ -115,7 +88,7 @@ func (s *Server) Handle(arg Arg, reply *Reply) error {
 		}
 
 		s.mu.Lock()
-		buf, err := json.Marshal(s.commits[idx:s.view])
+		buf, err := json.Marshal(s.commitLog[idx:s.view])
 		s.mu.Unlock()
 
 		if err != nil {
