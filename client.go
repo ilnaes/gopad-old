@@ -1,8 +1,7 @@
 package main
 
-// Most of these are based on a stripped down version of
-// the text editor of https://viewsourcecode.org/snaptoken/kilo/ which
-// is based on antirez's kilo
+// Most of these are based on a stripped down version of kilo given by
+// https://viewsourcecode.org/snaptoken/kilo/ as well as the editbox demo
 
 import (
 	"bufio"
@@ -28,7 +27,7 @@ type gopad struct {
 	screencols int
 	rowoff     int
 	coloff     int
-	pos        Pos
+	pos        Pos // current position (possibly not commited)
 	doc        Doc
 	tempdoc    Doc
 	buf        *bufio.ReadWriter
@@ -36,11 +35,11 @@ type gopad struct {
 
 	id          uint32
 	selfOps     []Op
-	opNum       int
-	sentpoint   int
-	commitpoint int
+	opNum       uint32
+	sentpoint   uint32
+	commitpoint uint32
 
-	users      map[uint32]*Pos
+	users      map[uint32]*Pos // last known position of other users
 	connection *rpc.Client
 }
 
@@ -50,7 +49,7 @@ func StartClient(server string) {
 	gp.srv = server + Port
 	gp.users = make(map[uint32]*Pos)
 
-	gp.editorOpen(server+Port, -1)
+	gp.editorOpen(server+Port, 0)
 
 	err := termbox.Init()
 	if err != nil {
@@ -58,6 +57,7 @@ func StartClient(server string) {
 	}
 	defer termbox.Close()
 	termbox.SetInputMode(termbox.InputEsc)
+	termbox.SetOutputMode(termbox.Output256)
 
 	gp.initEditor()
 
@@ -74,7 +74,7 @@ mainloop:
 				gp.connection.Close()
 				break mainloop
 			case termbox.KeyArrowLeft, termbox.KeyArrowRight, termbox.KeyArrowUp, termbox.KeyArrowDown:
-				gp.editorMoveCursor(ev.Key)
+				gp.editorMoveCursor(ev.Key, true, true)
 			case termbox.KeyPgup, termbox.KeyPgdn:
 				for times := gp.screenrows; times > 0; times-- {
 					var x termbox.Key
@@ -83,7 +83,7 @@ mainloop:
 					} else {
 						x = termbox.KeyArrowUp
 					}
-					gp.editorMoveCursor(x)
+					gp.editorMoveCursor(x, true, true)
 				}
 			case termbox.KeyHome:
 				gp.pos.X = 0
@@ -94,17 +94,17 @@ mainloop:
 			case termbox.KeyBackspace, termbox.KeyBackspace2:
 				gp.editorDelRune(true)
 			case termbox.KeyDelete, termbox.KeyCtrlD:
-				gp.editorMoveCursor(termbox.KeyArrowRight)
+				gp.editorMoveCursor(termbox.KeyArrowRight, true, true)
 				gp.editorDelRune(true)
 			// case termbox.KeyTab:
 			// 	edit_box.InsertRune('\t')
 			case termbox.KeySpace:
-				gp.editorInsertRune(' ', &gp.pos, true, true)
+				gp.editorInsertRune(' ', &gp.pos, gp.id, true, true)
 			case termbox.KeyEnter:
 				gp.editorInsertNewLine(true)
 			default:
 				if ev.Ch != 0 {
-					gp.editorInsertRune(ev.Ch, &gp.pos, true, true)
+					gp.editorInsertRune(ev.Ch, &gp.pos, gp.id, true, true)
 				}
 			}
 		case termbox.EventError:
@@ -118,7 +118,7 @@ mainloop:
 func (gp *gopad) push() {
 	for {
 		gp.mu.Lock()
-		if len(gp.selfOps)+gp.commitpoint <= gp.sentpoint {
+		if uint32(len(gp.selfOps))+gp.commitpoint <= gp.sentpoint {
 			// no new ops
 			gp.mu.Unlock()
 			time.Sleep(pushDelay)
@@ -132,16 +132,14 @@ func (gp *gopad) push() {
 			continue
 		}
 
-		arg := Arg{Op: "Op", Data: buf}
-
 		ok := false
 		for !ok {
-			var reply Reply
-			ok = gp.call(gp.srv, "Server.Handle", arg, &reply)
+			var reply OpReply
+			ok = gp.call(gp.srv, "Server.Handle", OpArg{Data: buf}, &reply)
 			if ok {
 				if reply.Err == "OK" {
 					// update op sent point
-					gp.sentpoint = len(gp.selfOps) + gp.commitpoint
+					gp.sentpoint = uint32(len(gp.selfOps)) + gp.commitpoint
 				}
 				gp.mu.Unlock()
 			}
@@ -156,8 +154,8 @@ func (gp *gopad) pull() {
 		ok := false
 
 		for !ok {
-			var reply Reply
-			ok = gp.call(gp.srv, "Server.Handle", Arg{Op: "Query", Data: intToByte(gp.doc.View)}, &reply)
+			var reply QueryReply
+			ok = gp.call(gp.srv, "Server.Query", QueryArg{View: gp.doc.View}, &reply)
 			if ok && reply.Err == "OK" {
 				var commits []Op
 				json.Unmarshal(reply.Data, &commits)
@@ -165,9 +163,9 @@ func (gp *gopad) pull() {
 					// apply commited ops
 					gp.mu.Lock()
 					gp.applyOps(commits)
+					gp.tempdoc = *gp.doc.copy()
 
 					// apply ops not yet commited
-					gp.tempdoc = *gp.doc.copy()
 					temppos := *gp.users[gp.id]
 					for _, op := range gp.selfOps {
 						gp.apply(op, &temppos, true)
@@ -186,11 +184,33 @@ func (gp *gopad) pull() {
 
 // TODO
 func (gp *gopad) apply(op Op, pos *Pos, temp bool) {
-	switch op.Op {
+	switch op.Type {
 	case Insert:
-		gp.editorInsertRune(op.Data, pos, temp, false)
+		gp.editorInsertRune(op.Data, pos, op.Client, temp, false)
 	case Init:
 		gp.users[op.Client] = &Pos{}
+	}
+}
+
+// move other cursors
+func (gp *gopad) updatePos(op Op) {
+	atx, aty := gp.users[op.Client].X, gp.users[op.Client].Y
+
+	for k, pos := range gp.users {
+		if k != op.Client {
+			switch op.Type {
+			case Insert:
+				if pos.Y == aty && pos.X >= atx {
+					pos.X++
+					// if updating own pos then update temp pos also
+					if k == gp.id {
+						gp.pos.X++
+					}
+				}
+			default:
+				return
+			}
+		}
 	}
 }
 
@@ -206,6 +226,7 @@ func (gp *gopad) applyOps(commits []Op) {
 		}
 		// TODO: update gp.doc
 		gp.apply(op, gp.users[op.Client], false)
+		gp.updatePos(op)
 	}
 	gp.doc.View += uint32(len(commits))
 
@@ -216,9 +237,65 @@ func (gp *gopad) applyOps(commits []Op) {
 	}
 }
 
+/*** input ***/
+
+func (gp *gopad) editorMoveCursor(key termbox.Key, temp, log bool) {
+
+	if log {
+		// gp.mu.Lock()
+		// gp.opNum++
+		// gp.selfOps = append(gp.selfOps, Op{Type: Insert, ID: gp.opNum, Data: key, View: gp.doc.View, Client: gp.id})
+		// gp.mu.Unlock()
+		// pos = &gp.pos
+	}
+
+	var row *erow
+	if gp.pos.Y < gp.tempdoc.Numrows {
+		row = &gp.tempdoc.Rows[gp.pos.Y]
+	} else {
+		row = nil
+	}
+
+	switch key {
+	case termbox.KeyArrowRight:
+		if row != nil && gp.pos.X < len(row.Chars) {
+			gp.pos.X++
+		} else if row != nil && gp.pos.X >= len(row.Chars) {
+			gp.pos.Y++
+			gp.pos.X = 0
+		}
+	case termbox.KeyArrowLeft:
+		if gp.pos.X != 0 {
+			gp.pos.X--
+		} else if gp.pos.Y > 0 {
+			gp.pos.Y--
+			gp.pos.X = len(gp.tempdoc.Rows[gp.pos.Y].Chars)
+		}
+	case termbox.KeyArrowDown:
+		if gp.pos.Y < gp.tempdoc.Numrows {
+			gp.pos.Y++
+		}
+	case termbox.KeyArrowUp:
+		if gp.pos.Y != 0 {
+			gp.pos.Y--
+		}
+	}
+
+	rowlen := 0
+	if gp.pos.Y < gp.tempdoc.Numrows {
+		rowlen = len(gp.tempdoc.Rows[gp.pos.Y].Chars)
+	}
+	if rowlen < 0 {
+		rowlen = 0
+	}
+	if gp.pos.X > rowlen {
+		gp.pos.X = rowlen
+	}
+}
+
 /*** editor operations ***/
 
-func (gp *gopad) editorInsertRune(key rune, pos *Pos, temp, log bool) {
+func (gp *gopad) editorInsertRune(key rune, pos *Pos, id uint32, temp, log bool) {
 	var doc *Doc
 
 	if temp {
@@ -230,16 +307,16 @@ func (gp *gopad) editorInsertRune(key rune, pos *Pos, temp, log bool) {
 	if log {
 		gp.mu.Lock()
 		gp.opNum++
-		gp.selfOps = append(gp.selfOps, Op{Op: Insert, ID: gp.opNum, Data: key, View: gp.doc.View, Client: gp.id})
+		gp.selfOps = append(gp.selfOps, Op{Type: Insert, ID: gp.opNum, Data: key, View: gp.doc.View, Client: gp.id})
 		gp.mu.Unlock()
 		pos = &gp.pos
 	}
 
 	if pos.Y == doc.Numrows {
-		doc.insertRow(pos.Y, "", []bool{})
+		doc.insertRow(pos.Y, "", []bool{}, []uint32{})
 	}
 
-	doc.rowInsertRune(pos.X, pos.Y, key, temp)
+	doc.rowInsertRune(pos.X, pos.Y, key, id, temp)
 	pos.X++
 }
 
@@ -247,7 +324,7 @@ func (gp *gopad) editorInsertNewLine(temp bool) {
 	var doc *Doc
 	if temp {
 		gp.mu.Lock()
-		gp.selfOps = append(gp.selfOps, Op{Op: Newline, ID: gp.opNum, View: gp.doc.View, Client: gp.id})
+		gp.selfOps = append(gp.selfOps, Op{Type: Newline, ID: gp.opNum, View: gp.doc.View, Client: gp.id})
 		gp.opNum++
 		gp.mu.Unlock()
 		doc = &gp.tempdoc
@@ -256,10 +333,10 @@ func (gp *gopad) editorInsertNewLine(temp bool) {
 	}
 
 	if gp.pos.X == 0 {
-		doc.insertRow(gp.pos.Y, "", []bool{})
+		doc.insertRow(gp.pos.Y, "", []bool{}, []uint32{})
 	} else {
 		row := &doc.Rows[gp.pos.Y]
-		doc.insertRow(gp.pos.Y+1, row.Chars[gp.pos.X:], row.Temp[gp.pos.X:])
+		doc.insertRow(gp.pos.Y+1, row.Chars[gp.pos.X:], row.Temp[gp.pos.X:], row.Author[gp.pos.X:])
 		row.Chars = row.Chars[:gp.pos.X]
 	}
 	gp.pos.Y++
@@ -271,7 +348,7 @@ func (gp *gopad) editorDelRune(temp bool) {
 	if temp {
 		// write operation to self commit log
 		gp.mu.Lock()
-		gp.selfOps = append(gp.selfOps, Op{Op: Delete, ID: gp.opNum, View: gp.doc.View, Client: gp.id})
+		gp.selfOps = append(gp.selfOps, Op{Type: Delete, ID: gp.opNum, View: gp.doc.View, Client: gp.id})
 		gp.opNum++
 		gp.mu.Unlock()
 		doc = &gp.tempdoc
@@ -336,9 +413,14 @@ func (gp *gopad) drawRows() {
 			for k, s := range gp.tempdoc.Rows[filerow].Chars {
 				if k >= gp.coloff {
 					if gp.tempdoc.Rows[filerow].Temp[k] {
-						termbox.SetCell(x+1, i, s, termbox.ColorRed, coldef)
+						termbox.SetCell(x+1, i, s, 202, coldef)
 					} else {
-						termbox.SetCell(x+1, i, s, coldef, coldef)
+						auth := gp.tempdoc.Rows[filerow].Author[k]
+						if auth == 0 || auth == gp.id {
+							termbox.SetCell(x+1, i, s, coldef, coldef)
+						} else {
+							termbox.SetCell(x+1, i, s, 51, coldef)
+						}
 					}
 					x++
 					if x+1 > gp.screencols {
@@ -360,7 +442,7 @@ func (gp *gopad) drawRows() {
 
 	// draw status bar
 	for ; j < gp.screencols+1; j++ {
-		termbox.SetCell(j, i, '>', termbox.ColorBlack, termbox.ColorWhite)
+		termbox.SetCell(j, i, ' ', termbox.ColorBlack, termbox.ColorWhite)
 	}
 
 }
@@ -381,9 +463,9 @@ func (gp *gopad) refreshScreen() {
 /*** file i/o ***/
 
 // get file from server
-func (gp *gopad) editorOpen(server string, view int) {
+func (gp *gopad) editorOpen(server string, view uint32) {
 	var reply InitReply
-	ok := gp.call(server, "Server.Init", Arg{Data: intToByte(gp.id)}, &reply)
+	ok := gp.call(server, "Server.Init", InitArg{Client: gp.id, View: view}, &reply)
 	if ok {
 		var d Doc
 		err := json.Unmarshal(reply.Doc, &d)
@@ -398,7 +480,7 @@ func (gp *gopad) editorOpen(server string, view int) {
 		}
 
 		for _, row := range d.Rows {
-			gp.doc.insertRow(gp.doc.Numrows, row.Chars, row.Temp)
+			gp.doc.insertRow(gp.doc.Numrows, row.Chars, row.Temp, row.Author)
 		}
 
 		if len(c) > 0 {
@@ -408,53 +490,6 @@ func (gp *gopad) editorOpen(server string, view int) {
 		gp.tempdoc = *gp.doc.copy()
 	} else {
 		log.Fatal("Not ok call")
-	}
-}
-
-/*** input ***/
-
-func (gp *gopad) editorMoveCursor(key termbox.Key) {
-	var row *erow
-	if gp.pos.Y < gp.tempdoc.Numrows {
-		row = &gp.tempdoc.Rows[gp.pos.Y]
-	} else {
-		row = nil
-	}
-
-	switch key {
-	case termbox.KeyArrowRight:
-		if row != nil && gp.pos.X < len(row.Chars) {
-			gp.pos.X++
-		} else if row != nil && gp.pos.X >= len(row.Chars) {
-			gp.pos.Y++
-			gp.pos.X = 0
-		}
-	case termbox.KeyArrowLeft:
-		if gp.pos.X != 0 {
-			gp.pos.X--
-		} else if gp.pos.Y > 0 {
-			gp.pos.Y--
-			gp.pos.X = len(gp.tempdoc.Rows[gp.pos.Y].Chars)
-		}
-	case termbox.KeyArrowDown:
-		if gp.pos.Y < gp.tempdoc.Numrows {
-			gp.pos.Y++
-		}
-	case termbox.KeyArrowUp:
-		if gp.pos.Y != 0 {
-			gp.pos.Y--
-		}
-	}
-
-	rowlen := 0
-	if gp.pos.Y < gp.tempdoc.Numrows {
-		rowlen = len(gp.tempdoc.Rows[gp.pos.Y].Chars)
-	}
-	if rowlen < 0 {
-		rowlen = 0
-	}
-	if gp.pos.X > rowlen {
-		gp.pos.X = rowlen
 	}
 }
 

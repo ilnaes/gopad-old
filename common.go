@@ -18,13 +18,20 @@ const (
 	Delete
 	Newline
 	Init
+	Left
+	Right
+	Up
+	Down
+	Home
+	End
 )
 
 type Err string
 
 type erow struct {
-	Chars string
-	Temp  []bool
+	Chars  string
+	Temp   []bool
+	Author []uint32
 	// render string
 }
 
@@ -41,16 +48,24 @@ type Doc struct {
 }
 
 type Op struct {
-	Op   int
+	Type int
 	Data rune
 	// X, Y   int
 	View   uint32
-	ID     int
+	ID     uint32
 	Client uint32
 }
 
-type Arg struct {
-	Op   string
+type InitArg struct {
+	Client uint32
+	View   uint32
+}
+
+type QueryArg struct {
+	View uint32
+}
+
+type OpArg struct {
 	Data []byte
 }
 
@@ -60,7 +75,11 @@ type InitReply struct {
 	Err     Err
 }
 
-type Reply struct {
+type OpReply struct {
+	Err Err
+}
+
+type QueryReply struct {
 	Data []byte
 	Err  Err
 }
@@ -80,7 +99,9 @@ func byteToInt(buf []byte) uint32 {
 func (row *erow) copy() *erow {
 	t := make([]bool, len(row.Temp))
 	copy(t, row.Temp)
-	return &erow{Chars: row.Chars, Temp: t}
+	a := make([]uint32, len(row.Author))
+	copy(a, row.Author)
+	return &erow{Chars: row.Chars, Temp: t, Author: a}
 }
 
 func (doc *Doc) copy() *Doc {
@@ -94,17 +115,17 @@ func (doc *Doc) copy() *Doc {
 
 /*** row operations ***/
 
-func (doc *Doc) insertRow(at int, s string, t []bool) {
+func (doc *Doc) insertRow(at int, s string, t []bool, a []uint32) {
 	// doc.Rows = append(doc.Rows, erow{Chars: s})
 	doc.Rows = append(doc.Rows, erow{})
 	copy(doc.Rows[at+1:], doc.Rows[at:])
-	doc.Rows[at] = erow{Chars: s, Temp: t}
+	doc.Rows[at] = erow{Chars: s, Temp: t, Author: a}
 	// doc.Rows[doc.Numrows].render = renderRow(s)
 	doc.Numrows++
 }
 
 // insert rune into row[aty] at position atx
-func (doc *Doc) rowInsertRune(atx, aty int, key rune, temp bool) {
+func (doc *Doc) rowInsertRune(atx, aty int, key rune, id uint32, temp bool) {
 	row := &doc.Rows[aty]
 
 	if atx < 0 || atx > len(row.Chars) {
@@ -117,8 +138,12 @@ func (doc *Doc) rowInsertRune(atx, aty int, key rune, temp bool) {
 	row.Chars = s
 
 	row.Temp = append(row.Temp, false)
-	copy(row.Temp[atx:], row.Temp[atx+1:])
+	copy(row.Temp[atx+1:], row.Temp[atx:])
 	row.Temp[atx] = temp
+
+	row.Author = append(row.Author, 0)
+	copy(row.Author[atx+1:], row.Author[atx:])
+	row.Author[atx] = id
 }
 
 // delete a rune

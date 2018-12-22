@@ -18,7 +18,7 @@ type Server struct {
 	view      uint32
 	px        Paxos
 	mu        sync.Mutex
-	users     map[int]int
+	users     map[uint32]uint32
 
 	// handler  map[string]HandleFunc
 	// m sync.RWMutex
@@ -31,10 +31,11 @@ func NewServer() *Server {
 	}
 	defer file.Close()
 
-	e := Server{doc: Doc{}, users: make(map[int]int), commitLog: make([]Op, 0)}
+	e := Server{doc: Doc{}, users: make(map[uint32]uint32), commitLog: make([]Op, 0)}
 	scanner := bufio.NewScanner(file)
 	for scanner.Scan() {
-		e.doc.Rows = append(e.doc.Rows, erow{Chars: scanner.Text(), Temp: make([]bool, len(scanner.Text()))})
+		e.doc.Rows = append(e.doc.Rows, erow{Chars: scanner.Text(),
+			Temp: make([]bool, len(scanner.Text())), Author: make([]uint32, len(scanner.Text()))})
 	}
 
 	return &e
@@ -43,20 +44,25 @@ func NewServer() *Server {
 func (s *Server) handleOp(ops []Op) {
 	log.Println("Got", len(ops), "ops")
 	s.mu.Lock()
+	start := s.users[ops[0].Client]
 	for _, c := range ops {
-		log.Println(c)
-		s.commitLog = append(s.commitLog, c)
-		s.view++
+		if c.ID >= start {
+			log.Println(c)
+			s.commitLog = append(s.commitLog, c)
+			s.view++
+		}
 	}
+	s.users[ops[0].Client] += uint32(len(ops))
 	s.mu.Unlock()
 }
 
-func (s *Server) Init(arg Arg, reply *InitReply) error {
-
+func (s *Server) Init(arg InitArg, reply *InitReply) error {
 	log.Println("Sending initial...")
 
-	s.commitLog = append(s.commitLog, Op{Op: Init, Client: byteToInt(arg.Data)})
+	s.commitLog = append(s.commitLog, Op{Type: Init, Client: arg.Client})
 	s.view++
+
+	s.users[arg.Client] = 1
 
 	// marshal document and send back
 	buf, err := json.Marshal(s.doc)
@@ -79,38 +85,63 @@ func (s *Server) Init(arg Arg, reply *InitReply) error {
 	return nil
 }
 
-func (s *Server) Handle(arg Arg, reply *Reply) error {
-	switch arg.Op {
-	case "Op":
-		// unmarshal commit array
-		var ops []Op
-		err := json.Unmarshal(arg.Data, &ops)
-		if err != nil {
-			log.Println("Couldn't unmarshal ops", err)
-			reply.Err = "Encode"
-			return nil
-		}
-		go s.handleOp(ops)
+func (s *Server) Query(arg QueryArg, reply *QueryReply) error {
+	idx := arg.View
 
-		reply.Err = "OK"
+	// log.Println("Sending query...", s.view-idx)
 
-	case "Query":
+	s.mu.Lock()
+	buf, err := json.Marshal(s.commitLog[idx:s.view])
+	s.mu.Unlock()
 
-		idx := byteToInt(arg.Data)
-
-		log.Println("Sending query...", s.view-idx)
-
-		s.mu.Lock()
-		buf, err := json.Marshal(s.commitLog[idx:s.view])
-		s.mu.Unlock()
-
-		if err != nil {
-			log.Println("Couldn't send document", err)
-			reply.Err = "Encode"
-			return nil
-		}
-		reply.Data = buf
+	if err != nil {
+		log.Println("Couldn't send document", err)
+		reply.Err = "Encode"
+		return nil
 	}
+	reply.Data = buf
+	reply.Err = "OK"
+	return nil
+}
+
+func (s *Server) Handle(arg OpArg, reply *OpReply) error {
+	// unmarshal commit array
+	var ops []Op
+	err := json.Unmarshal(arg.Data, &ops)
+	if err != nil {
+		log.Println("Couldn't unmarshal ops", err)
+		reply.Err = "Encode"
+		return nil
+	}
+
+	if len(ops) > 0 {
+		if ops[0].ID > s.users[ops[0].Client] {
+			// sequence number larger than expected
+			reply.Err = "High"
+			return nil
+		}
+
+		if len(ops) > 1 {
+			for i := 1; i < len(ops); i++ {
+				if ops[i].ID != ops[i-1].ID+1 {
+					// out of sequential order
+					reply.Err = "Order"
+					return nil
+				}
+
+				if ops[i].Client != ops[i-1].Client {
+					// different client ids
+					reply.Err = "Client"
+					return nil
+				}
+			}
+		}
+
+		if ops[len(ops)-1].ID >= s.users[ops[0].Client] {
+			go s.handleOp(ops)
+		}
+	}
+
 	reply.Err = "OK"
 	return nil
 }
