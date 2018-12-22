@@ -2,7 +2,7 @@ package main
 
 import (
 	"bufio"
-	"encoding/binary"
+	// "encoding/binary"
 	"encoding/json"
 	"log"
 	"net"
@@ -18,6 +18,7 @@ type Server struct {
 	view      uint32
 	px        Paxos
 	mu        sync.Mutex
+	users     map[int]int
 
 	// handler  map[string]HandleFunc
 	// m sync.RWMutex
@@ -30,7 +31,7 @@ func NewServer() *Server {
 	}
 	defer file.Close()
 
-	e := Server{doc: Doc{}, commitLog: make([]Op, 0)}
+	e := Server{doc: Doc{}, users: make(map[int]int), commitLog: make([]Op, 0)}
 	scanner := bufio.NewScanner(file)
 	for scanner.Scan() {
 		e.doc.Rows = append(e.doc.Rows, erow{Chars: scanner.Text(), Temp: make([]bool, len(scanner.Text()))})
@@ -50,6 +51,34 @@ func (s *Server) handleOp(ops []Op) {
 	s.mu.Unlock()
 }
 
+func (s *Server) Init(arg Arg, reply *InitReply) error {
+
+	log.Println("Sending initial...")
+
+	s.commitLog = append(s.commitLog, Op{Op: Init, Client: byteToInt(arg.Data)})
+	s.view++
+
+	// marshal document and send back
+	buf, err := json.Marshal(s.doc)
+	if err != nil {
+		log.Println("Couldn't send document", err)
+		reply.Err = "Encode"
+		return nil
+	}
+	reply.Doc = buf
+
+	buf, err = json.Marshal(s.commitLog)
+	if err != nil {
+		log.Println("Couldn't send log", err)
+		reply.Err = "Encode"
+		return nil
+	}
+	reply.Commits = buf
+	reply.Err = "OK"
+
+	return nil
+}
+
 func (s *Server) Handle(arg Arg, reply *Reply) error {
 	switch arg.Op {
 	case "Op":
@@ -65,22 +94,9 @@ func (s *Server) Handle(arg Arg, reply *Reply) error {
 
 		reply.Err = "OK"
 
-	case "Init":
-		log.Println("Sending initial...")
-
-		// marshal document and send back
-		buf, err := json.Marshal(s.doc)
-		if err != nil {
-			log.Println("Couldn't send document", err)
-			reply.Err = "Encode"
-			return nil
-		}
-		reply.Data = buf
-		reply.Err = "OK"
-
 	case "Query":
 
-		idx := binary.LittleEndian.Uint32(arg.Data)
+		idx := byteToInt(arg.Data)
 
 		log.Println("Sending query...", s.view-idx)
 

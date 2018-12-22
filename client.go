@@ -6,7 +6,6 @@ package main
 
 import (
 	"bufio"
-	"encoding/binary"
 	"encoding/json"
 	"fmt"
 	"github.com/nsf/termbox-go"
@@ -35,22 +34,21 @@ type gopad struct {
 	buf        *bufio.ReadWriter
 	mu         sync.Mutex
 
-	id          int
+	id          uint32
 	selfOps     []Op
 	opNum       int
 	sentpoint   int
 	commitpoint int
 
-	users      map[int]*Pos
+	users      map[uint32]*Pos
 	connection *rpc.Client
 }
 
 func StartClient(server string) {
 	var gp gopad
-	gp.id = rand.Int()
+	gp.id = rand.Uint32()
 	gp.srv = server + Port
-	gp.users = make(map[int]*Pos)
-	gp.users[gp.id] = &Pos{}
+	gp.users = make(map[uint32]*Pos)
 
 	gp.editorOpen(server+Port, -1)
 
@@ -116,26 +114,6 @@ mainloop:
 	}
 }
 
-// rpc caller
-func (gp *gopad) call(srv string, rpcname string, args interface{}, reply interface{}) bool {
-	var err error
-	if gp.connection == nil {
-		// attempt to dial
-		gp.connection, err = rpc.Dial("tcp", srv)
-		if err != nil {
-			log.Println("Couldn't connect to", srv)
-			return false
-		}
-	}
-
-	err = gp.connection.Call(rpcname, args, reply)
-	if err != nil {
-		log.Println(err)
-		return false
-	}
-	return true
-}
-
 // push commits to server
 func (gp *gopad) push() {
 	for {
@@ -176,12 +154,10 @@ func (gp *gopad) push() {
 func (gp *gopad) pull() {
 	for {
 		ok := false
-		buf := make([]byte, binary.MaxVarintLen64)
-		binary.LittleEndian.PutUint32(buf, gp.doc.View)
 
 		for !ok {
 			var reply Reply
-			ok = gp.call(gp.srv, "Server.Handle", Arg{Op: "Query", Data: buf}, &reply)
+			ok = gp.call(gp.srv, "Server.Handle", Arg{Op: "Query", Data: intToByte(gp.doc.View)}, &reply)
 			if ok && reply.Err == "OK" {
 				var commits []Op
 				json.Unmarshal(reply.Data, &commits)
@@ -189,7 +165,6 @@ func (gp *gopad) pull() {
 					// apply commited ops
 					gp.mu.Lock()
 					gp.applyOps(commits)
-					gp.mu.Unlock()
 
 					// apply ops not yet commited
 					gp.tempdoc = *gp.doc.copy()
@@ -197,6 +172,7 @@ func (gp *gopad) pull() {
 					for _, op := range gp.selfOps {
 						gp.apply(op, &temppos, true)
 					}
+					gp.mu.Unlock()
 
 					gp.refreshScreen()
 				}
@@ -213,6 +189,8 @@ func (gp *gopad) apply(op Op, pos *Pos, temp bool) {
 	switch op.Op {
 	case Insert:
 		gp.editorInsertRune(op.Data, pos, temp, false)
+	case Init:
+		gp.users[op.Client] = &Pos{}
 	}
 }
 
@@ -229,13 +207,13 @@ func (gp *gopad) applyOps(commits []Op) {
 		// TODO: update gp.doc
 		gp.apply(op, gp.users[op.Client], false)
 	}
+	gp.doc.View += uint32(len(commits))
 
 	// cut off commiteds
 	if newpoint > gp.commitpoint {
 		gp.selfOps = gp.selfOps[newpoint-gp.commitpoint:]
 		gp.commitpoint = newpoint
 	}
-	gp.doc.View += uint32(len(commits))
 }
 
 /*** editor operations ***/
@@ -252,8 +230,7 @@ func (gp *gopad) editorInsertRune(key rune, pos *Pos, temp, log bool) {
 	if log {
 		gp.mu.Lock()
 		gp.opNum++
-		gp.selfOps = append(gp.selfOps, Op{Op: Insert, X: gp.pos.X,
-			Y: gp.pos.Y, ID: gp.opNum, Data: key, View: gp.doc.View, Client: gp.id})
+		gp.selfOps = append(gp.selfOps, Op{Op: Insert, ID: gp.opNum, Data: key, View: gp.doc.View, Client: gp.id})
 		gp.mu.Unlock()
 		pos = &gp.pos
 	}
@@ -270,8 +247,7 @@ func (gp *gopad) editorInsertNewLine(temp bool) {
 	var doc *Doc
 	if temp {
 		gp.mu.Lock()
-		gp.selfOps = append(gp.selfOps, Op{Op: Newline, X: gp.pos.X,
-			Y: gp.pos.Y, ID: gp.opNum, View: gp.doc.View, Client: gp.id})
+		gp.selfOps = append(gp.selfOps, Op{Op: Newline, ID: gp.opNum, View: gp.doc.View, Client: gp.id})
 		gp.opNum++
 		gp.mu.Unlock()
 		doc = &gp.tempdoc
@@ -295,8 +271,7 @@ func (gp *gopad) editorDelRune(temp bool) {
 	if temp {
 		// write operation to self commit log
 		gp.mu.Lock()
-		gp.selfOps = append(gp.selfOps, Op{Op: Delete, X: gp.pos.X,
-			Y: gp.pos.Y, ID: gp.opNum, View: gp.doc.View, Client: gp.id})
+		gp.selfOps = append(gp.selfOps, Op{Op: Delete, ID: gp.opNum, View: gp.doc.View, Client: gp.id})
 		gp.opNum++
 		gp.mu.Unlock()
 		doc = &gp.tempdoc
@@ -407,11 +382,17 @@ func (gp *gopad) refreshScreen() {
 
 // get file from server
 func (gp *gopad) editorOpen(server string, view int) {
-	var reply Reply
-	ok := gp.call(server, "Server.Handle", Arg{Op: "Init"}, &reply)
+	var reply InitReply
+	ok := gp.call(server, "Server.Init", Arg{Data: intToByte(gp.id)}, &reply)
 	if ok {
 		var d Doc
-		err := json.Unmarshal(reply.Data, &d)
+		err := json.Unmarshal(reply.Doc, &d)
+		if err != nil {
+			log.Fatal("Couldn't decode document")
+		}
+
+		var c []Op
+		err = json.Unmarshal(reply.Commits, &c)
 		if err != nil {
 			log.Fatal("Couldn't decode document")
 		}
@@ -419,10 +400,15 @@ func (gp *gopad) editorOpen(server string, view int) {
 		for _, row := range d.Rows {
 			gp.doc.insertRow(gp.doc.Numrows, row.Chars, row.Temp)
 		}
+
+		if len(c) > 0 {
+			gp.applyOps(c)
+		}
+
+		gp.tempdoc = *gp.doc.copy()
 	} else {
 		log.Fatal("Not ok call")
 	}
-	gp.tempdoc = *gp.doc.copy()
 }
 
 /*** input ***/
@@ -511,3 +497,23 @@ func (gp *gopad) initEditor() {
 // 	}
 // 	return sb.String()
 // }
+
+// rpc caller
+func (gp *gopad) call(srv string, rpcname string, args interface{}, reply interface{}) bool {
+	var err error
+	if gp.connection == nil {
+		// attempt to dial
+		gp.connection, err = rpc.Dial("tcp", srv)
+		if err != nil {
+			log.Println("Couldn't connect to", srv)
+			return false
+		}
+	}
+
+	err = gp.connection.Call(rpcname, args, reply)
+	if err != nil {
+		log.Println(err)
+		return false
+	}
+	return true
+}

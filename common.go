@@ -1,12 +1,13 @@
 package main
 
-// import (
-// 	"bytes"
-// "bufio"
-// "net"
-// "sync"
-// "log"
-// )
+import (
+	"encoding/binary"
+	// 	"bytes"
+	// "bufio"
+	// "net"
+	// "sync"
+	// "log"
+)
 
 const (
 	Port = ":6060"
@@ -16,6 +17,7 @@ const (
 	Insert = iota
 	Delete
 	Newline
+	Init
 )
 
 type Err string
@@ -39,12 +41,12 @@ type Doc struct {
 }
 
 type Op struct {
-	Op     int
-	Data   rune
-	X, Y   int
+	Op   int
+	Data rune
+	// X, Y   int
 	View   uint32
 	ID     int
-	Client int
+	Client uint32
 }
 
 type Arg struct {
@@ -52,9 +54,25 @@ type Arg struct {
 	Data []byte
 }
 
+type InitReply struct {
+	Doc     []byte
+	Commits []byte
+	Err     Err
+}
+
 type Reply struct {
 	Data []byte
 	Err  Err
+}
+
+func intToByte(x uint32) []byte {
+	buf := make([]byte, binary.MaxVarintLen32)
+	binary.LittleEndian.PutUint32(buf, x)
+	return buf
+}
+
+func byteToInt(buf []byte) uint32 {
+	return binary.LittleEndian.Uint32(buf)
 }
 
 /*** copy functions ***/
