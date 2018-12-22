@@ -12,6 +12,12 @@ const (
 	Port = ":6060"
 )
 
+const (
+	Insert = iota
+	Delete
+	Newline
+)
+
 type Err string
 
 type erow struct {
@@ -20,24 +26,23 @@ type erow struct {
 	// render string
 }
 
-type pos struct {
+type Pos struct {
 	X, Y int
 }
 
 type Doc struct {
-	Rows    []erow
-	View    int
-	Cursors []pos
+	Rows []erow
+	View uint32
 
 	// optional really
 	Numrows int
 }
 
 type Op struct {
-	Op     string
+	Op     int
 	Data   rune
 	X, Y   int
-	View   int
+	View   uint32
 	ID     int
 	Client int
 }
@@ -50,6 +55,23 @@ type Arg struct {
 type Reply struct {
 	Data []byte
 	Err  Err
+}
+
+/*** copy functions ***/
+
+func (row *erow) copy() *erow {
+	t := make([]bool, len(row.Temp))
+	copy(t, row.Temp)
+	return &erow{Chars: row.Chars, Temp: t}
+}
+
+func (doc *Doc) copy() *Doc {
+	d := Doc{View: doc.View, Numrows: doc.Numrows}
+	d.Rows = make([]erow, len(doc.Rows))
+	for i := 0; i < len(d.Rows); i++ {
+		d.Rows[i] = *doc.Rows[i].copy()
+	}
+	return &d
 }
 
 /*** row operations ***/

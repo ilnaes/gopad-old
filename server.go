@@ -15,7 +15,7 @@ type Server struct {
 	listener  net.Listener
 	commitLog []Op
 	doc       Doc
-	view      int
+	view      uint32
 	px        Paxos
 	mu        sync.Mutex
 
@@ -45,6 +45,7 @@ func (s *Server) handleOp(ops []Op) {
 	for _, c := range ops {
 		log.Println(c)
 		s.commitLog = append(s.commitLog, c)
+		s.view++
 	}
 	s.mu.Unlock()
 }
@@ -78,14 +79,10 @@ func (s *Server) Handle(arg Arg, reply *Reply) error {
 		reply.Err = "OK"
 
 	case "Query":
-		log.Println("Sending query...")
 
-		idx, num := binary.Varint(arg.Data)
-		if num == 0 {
-			log.Println("Couldn't decode query")
-			reply.Err = "Decode"
-			return nil
-		}
+		idx := binary.LittleEndian.Uint32(arg.Data)
+
+		log.Println("Sending query...", s.view-idx)
 
 		s.mu.Lock()
 		buf, err := json.Marshal(s.commitLog[idx:s.view])

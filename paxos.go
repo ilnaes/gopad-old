@@ -22,6 +22,7 @@ package main
 
 import "net"
 
+import "log"
 import "bytes"
 import "os"
 import "sync"
@@ -29,6 +30,7 @@ import "fmt"
 import "math/rand"
 import "time"
 import "encoding/gob"
+import "net/rpc"
 
 const Debug = true
 
@@ -125,6 +127,24 @@ func (px *Paxos) Unlock() {
 func (px *Paxos) SetSave(dir string) {
 	px.save = true
 	px.saveDir = dir
+}
+
+func call(srv string, rpcname string, args interface{}, reply interface{}) bool {
+
+	// attempt to dial
+	c, err := rpc.Dial("tcp", srv)
+	defer c.Close()
+	if err != nil {
+		log.Println("Couldn't connect to", srv)
+		return false
+	}
+
+	err = c.Call(rpcname, args, reply)
+	if err != nil {
+		log.Println(err)
+		return false
+	}
+	return true
 }
 
 // Recover data from log
