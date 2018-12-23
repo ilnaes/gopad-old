@@ -1,13 +1,10 @@
 package main
 
 import (
-	"encoding/binary"
+	// "encoding/binary"
 	"github.com/nsf/termbox-go"
-	// 	"bytes"
-	// "bufio"
-	// "net"
-	// "sync"
-	// "log"
+	"log"
+	"net/rpc"
 )
 
 const (
@@ -81,14 +78,26 @@ type QueryReply struct {
 	Err  Err
 }
 
-func intToByte(x uint32) []byte {
-	buf := make([]byte, binary.MaxVarintLen32)
-	binary.LittleEndian.PutUint32(buf, x)
-	return buf
-}
+func call(srv string, rpcname string, args interface{}, reply interface{}, verbose bool) bool {
 
-func byteToInt(buf []byte) uint32 {
-	return binary.LittleEndian.Uint32(buf)
+	// attempt to dial
+	c, err := rpc.Dial("tcp", srv)
+	if err != nil {
+		if verbose {
+			log.Println("Couldn't connect to", srv)
+		}
+		return false
+	}
+	defer c.Close()
+
+	err = c.Call(rpcname, args, reply)
+	if err != nil {
+		if verbose {
+			log.Println(err)
+		}
+		return false
+	}
+	return true
 }
 
 /*** copy functions ***/

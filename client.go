@@ -6,7 +6,6 @@ package main
 import (
 	"bufio"
 	"encoding/json"
-	"fmt"
 	"github.com/nsf/termbox-go"
 	"log"
 	"math/rand"
@@ -33,6 +32,7 @@ type gopad struct {
 	buf        *bufio.ReadWriter
 	mu         sync.Mutex
 
+	status      string
 	id          uint32
 	selfOps     []Op
 	opNum       uint32
@@ -71,7 +71,6 @@ mainloop:
 		case termbox.EventKey:
 			switch ev.Key {
 			case termbox.KeyCtrlC:
-				gp.connection.Close()
 				break mainloop
 			case termbox.KeyArrowLeft,
 				termbox.KeyArrowRight,
@@ -136,7 +135,8 @@ func (gp *gopad) logOp(ops []Op) {
 func (gp *gopad) push() {
 	for {
 		gp.mu.Lock()
-		if uint32(len(gp.selfOps))+gp.commitpoint <= gp.sentpoint {
+		l := uint32(len(gp.selfOps)) + gp.commitpoint
+		if l <= gp.sentpoint {
 			// no new ops
 			gp.mu.Unlock()
 			time.Sleep(pushDelay)
@@ -146,18 +146,22 @@ func (gp *gopad) push() {
 		buf, err := json.Marshal(gp.selfOps[gp.sentpoint-gp.commitpoint : len(gp.selfOps)])
 		if err != nil {
 			log.Println("Couldn't marshal commits", err)
+			gp.mu.Unlock()
 			time.Sleep(pushDelay)
 			continue
 		}
+		gp.mu.Unlock()
 
 		ok := false
 		for !ok {
 			var reply OpReply
-			ok = gp.call(gp.srv, "Server.Handle", OpArg{Data: buf}, &reply)
+			ok = call(gp.srv, "Server.Handle", OpArg{Data: buf}, &reply, false)
+			gp.status = string(reply.Err)
 			if ok {
+				gp.mu.Lock()
 				if reply.Err == "OK" {
 					// update op sent point
-					gp.sentpoint = uint32(len(gp.selfOps)) + gp.commitpoint
+					gp.sentpoint = l
 				}
 				gp.mu.Unlock()
 			}
@@ -173,7 +177,7 @@ func (gp *gopad) pull() {
 
 		for !ok {
 			var reply QueryReply
-			ok = gp.call(gp.srv, "Server.Query", QueryArg{View: gp.doc.View}, &reply)
+			ok = call(gp.srv, "Server.Query", QueryArg{View: gp.doc.View}, &reply, false)
 			if ok && reply.Err == "OK" {
 				var commits []Op
 				json.Unmarshal(reply.Data, &commits)
@@ -504,10 +508,14 @@ func (gp *gopad) drawRows() {
 			termbox.SetCell(0, i, '~', coldef, coldef)
 		}
 	}
+}
+
+func (gp *gopad) editorDrawStatusBar() {
+	i := gp.screenrows
 
 	var j int
 
-	for _, c := range fmt.Sprintf("%d", gp.users[gp.id].X) {
+	for _, c := range gp.status {
 		termbox.SetCell(j, i, c, termbox.ColorBlack, termbox.ColorWhite)
 		j++
 	}
@@ -526,6 +534,7 @@ func (gp *gopad) refreshScreen() {
 
 	gp.editorScroll()
 	gp.drawRows()
+	gp.editorDrawStatusBar()
 
 	termbox.SetCursor(gp.pos.X-gp.coloff+1, gp.pos.Y-gp.rowoff)
 	termbox.Flush()
@@ -537,7 +546,7 @@ func (gp *gopad) refreshScreen() {
 // get file from server
 func (gp *gopad) editorOpen(server string, view uint32) {
 	var reply InitReply
-	ok := gp.call(server, "Server.Init", InitArg{Client: gp.id, View: view}, &reply)
+	ok := call(server, "Server.Init", InitArg{Client: gp.id, View: view}, &reply, false)
 	if ok {
 		var d Doc
 		err := json.Unmarshal(reply.Doc, &d)
@@ -561,7 +570,7 @@ func (gp *gopad) editorOpen(server string, view uint32) {
 
 		gp.tempdoc = *gp.doc.copy()
 	} else {
-		log.Fatal("Not ok call")
+		log.Fatal("Not ok call", false)
 	}
 }
 
@@ -606,21 +615,19 @@ func (gp *gopad) initEditor() {
 // }
 
 // rpc caller
-func (gp *gopad) call(srv string, rpcname string, args interface{}, reply interface{}) bool {
-	var err error
-	if gp.connection == nil {
-		// attempt to dial
-		gp.connection, err = rpc.Dial("tcp", srv)
-		if err != nil {
-			log.Println("Couldn't connect to", srv)
-			return false
-		}
-	}
+// func call(srv string, rpcname string, args interface{}, reply interface{}) bool {
+// 	// attempt to dial
+// 	c, err := rpc.Dial("tcp", srv)
+// 	if err != nil {
+// 		// log.Println("Couldn't connect to", srv)
+// 		return false
+// 	}
+// 	defer c.Close()
 
-	err = gp.connection.Call(rpcname, args, reply)
-	if err != nil {
-		log.Println(err)
-		return false
-	}
-	return true
-}
+// 	err = c.Call(rpcname, args, reply)
+// 	if err != nil {
+// 		// log.Println(err)
+// 		return false
+// 	}
+// 	return true
+// }

@@ -22,7 +22,6 @@ package main
 
 import "net"
 
-import "log"
 import "bytes"
 import "os"
 import "sync"
@@ -30,7 +29,6 @@ import "fmt"
 import "math/rand"
 import "time"
 import "encoding/gob"
-import "net/rpc"
 
 const Debug = true
 
@@ -127,24 +125,6 @@ func (px *Paxos) Unlock() {
 func (px *Paxos) SetSave(dir string) {
 	px.save = true
 	px.saveDir = dir
-}
-
-func call(srv string, rpcname string, args interface{}, reply interface{}) bool {
-
-	// attempt to dial
-	c, err := rpc.Dial("tcp", srv)
-	defer c.Close()
-	if err != nil {
-		log.Println("Couldn't connect to", srv)
-		return false
-	}
-
-	err = c.Call(rpcname, args, reply)
-	if err != nil {
-		log.Println(err)
-		return false
-	}
-	return true
 }
 
 // Recover data from log
@@ -310,7 +290,7 @@ func (px *Paxos) sendPrepare(Seq int, n int, v interface{}) (bool, int, interfac
 		if i == px.me {
 			px.Prepare(PrepareArgs{Seq, n}, &reply)
 		} else {
-			ok = call(server, "Paxos.Prepare", PrepareArgs{Seq, n}, &reply)
+			ok = call(server, "Paxos.Prepare", PrepareArgs{Seq, n}, &reply, true)
 		}
 
 		if i == px.me || ok {
@@ -383,7 +363,7 @@ func (px *Paxos) propose(Seq int, v interface{}) {
 				px.Decided(DecidedArgs{Seq, v}, &reply)
 			} else {
 				// RPC call others
-				call(server, "Paxos.Decided", DecidedArgs{Seq, v}, &reply)
+				call(server, "Paxos.Decided", DecidedArgs{Seq, v}, &reply, true)
 			}
 		}
 	}
@@ -403,7 +383,7 @@ func (px *Paxos) sendAccepted(Seq int, n int, v interface{}) int {
 		} else {
 			// RPC call others
 			//fmt.Printf("ACCEPT %d:  %d to %d\n",Seq,px.me,i)
-			ok = call(server, "Paxos.Accept", AcceptArgs{Seq, n, v}, &reply)
+			ok = call(server, "Paxos.Accept", AcceptArgs{Seq, n, v}, &reply, true)
 		}
 
 		if ok {
@@ -537,7 +517,7 @@ func (px *Paxos) propDone() {
 		var reply DoneReply
 
 		if i != px.me {
-			ok := call(server, "Paxos.ReplyDone", DoneArgs{px.DoneSeqs[px.me], px.me}, &reply)
+			ok := call(server, "Paxos.ReplyDone", DoneArgs{px.DoneSeqs[px.me], px.me}, &reply, true)
 			if ok {
 				px.mu.Lock()
 				px.DoneSeqs[i] = reply.Num
