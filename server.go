@@ -34,8 +34,8 @@ func NewServer() *Server {
 	e := Server{doc: Doc{}, users: make(map[uint32]uint32), commitLog: make([]Op, 0)}
 	scanner := bufio.NewScanner(file)
 	for scanner.Scan() {
-		e.doc.Rows = append(e.doc.Rows, erow{Chars: scanner.Text(),
-			Temp: make([]bool, len(scanner.Text())), Author: make([]uint32, len(scanner.Text()))})
+		e.doc.Rows = append(e.doc.Rows,
+			erow{Chars: scanner.Text(), Temp: make([]bool, len(scanner.Text())), Author: make([]uint32, len(scanner.Text()))})
 	}
 
 	return &e

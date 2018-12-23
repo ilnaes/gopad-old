@@ -73,38 +73,46 @@ mainloop:
 			case termbox.KeyCtrlC:
 				gp.connection.Close()
 				break mainloop
-			case termbox.KeyArrowLeft, termbox.KeyArrowRight, termbox.KeyArrowUp, termbox.KeyArrowDown:
-				gp.editorMoveCursor(ev.Key, true, true)
-			case termbox.KeyPgup, termbox.KeyPgdn:
-				for times := gp.screenrows; times > 0; times-- {
-					var x termbox.Key
-					if ev.Key == termbox.KeyPgdn {
-						x = termbox.KeyArrowDown
-					} else {
-						x = termbox.KeyArrowUp
-					}
-					gp.editorMoveCursor(x, true, true)
-				}
-			case termbox.KeyHome:
-				gp.pos.X = 0
-			case termbox.KeyEnd:
-				if gp.pos.Y < gp.doc.Numrows {
-					gp.pos.X = len(gp.doc.Rows[gp.pos.Y].Chars)
-				}
+			case termbox.KeyArrowLeft,
+				termbox.KeyArrowRight,
+				termbox.KeyArrowUp,
+				termbox.KeyArrowDown,
+				termbox.KeyHome,
+				termbox.KeyEnd:
+				gp.logOp([]Op{Op{Type: Move, Move: ev.Key, View: gp.doc.View, Client: gp.id}})
+				gp.editorMoveCursor(ev.Key, &gp.pos, true)
+			// case termbox.KeyPgup, termbox.KeyPgdn:
+			// 	for times := gp.screenrows; times > 0; times-- {
+			// 		var x termbox.Key
+			// 		if ev.Key == termbox.KeyPgdn {
+			// 			x = termbox.KeyArrowDown
+			// 		} else {
+			// 			x = termbox.KeyArrowUp
+			// 		}
+			// 		gp.editorMoveCursor(x, &gp.pos, true, true)
+			// 	}
 			case termbox.KeyBackspace, termbox.KeyBackspace2:
-				gp.editorDelRune(true)
+				gp.logOp([]Op{Op{Type: Delete, View: gp.doc.View, Client: gp.id}})
+				gp.editorDelRune(&gp.pos, gp.id, true)
 			case termbox.KeyDelete, termbox.KeyCtrlD:
-				gp.editorMoveCursor(termbox.KeyArrowRight, true, true)
-				gp.editorDelRune(true)
+				gp.logOp([]Op{
+					Op{Type: Move, Move: termbox.KeyArrowRight, View: gp.doc.View, Client: gp.id},
+					Op{Type: Delete, View: gp.doc.View, Client: gp.id},
+				})
+				gp.editorMoveCursor(termbox.KeyArrowRight, &gp.pos, true)
+				gp.editorDelRune(&gp.pos, gp.id, true)
 			// case termbox.KeyTab:
 			// 	edit_box.InsertRune('\t')
 			case termbox.KeySpace:
-				gp.editorInsertRune(' ', &gp.pos, gp.id, true, true)
+				gp.logOp([]Op{Op{Type: Insert, Data: ' ', View: gp.doc.View, Client: gp.id}})
+				gp.editorInsertRune(' ', &gp.pos, gp.id, true)
 			case termbox.KeyEnter:
-				gp.editorInsertNewLine(true)
+				gp.logOp([]Op{Op{Type: Newline, View: gp.doc.View, Client: gp.id}})
+				gp.editorInsertNewLine(&gp.pos, gp.id, true)
 			default:
 				if ev.Ch != 0 {
-					gp.editorInsertRune(ev.Ch, &gp.pos, gp.id, true, true)
+					gp.logOp([]Op{Op{Type: Insert, Data: ev.Ch, View: gp.doc.View, Client: gp.id}})
+					gp.editorInsertRune(ev.Ch, &gp.pos, gp.id, true)
 				}
 			}
 		case termbox.EventError:
@@ -112,6 +120,16 @@ mainloop:
 		}
 		gp.refreshScreen()
 	}
+}
+
+func (gp *gopad) logOp(ops []Op) {
+	gp.mu.Lock()
+	for _, op := range ops {
+		gp.opNum++
+		op.ID = gp.opNum
+		gp.selfOps = append(gp.selfOps, op)
+	}
+	gp.mu.Unlock()
 }
 
 // push commits to server
@@ -182,35 +200,19 @@ func (gp *gopad) pull() {
 	}
 }
 
-// TODO
+// Update commited ops
 func (gp *gopad) apply(op Op, pos *Pos, temp bool) {
 	switch op.Type {
 	case Insert:
-		gp.editorInsertRune(op.Data, pos, op.Client, temp, false)
+		gp.editorInsertRune(op.Data, pos, op.Client, temp)
 	case Init:
 		gp.users[op.Client] = &Pos{}
-	}
-}
-
-// move other cursors
-func (gp *gopad) updatePos(op Op) {
-	atx, aty := gp.users[op.Client].X, gp.users[op.Client].Y
-
-	for k, pos := range gp.users {
-		if k != op.Client {
-			switch op.Type {
-			case Insert:
-				if pos.Y == aty && pos.X >= atx {
-					pos.X++
-					// if updating own pos then update temp pos also
-					if k == gp.id {
-						gp.pos.X++
-					}
-				}
-			default:
-				return
-			}
-		}
+	case Move:
+		gp.editorMoveCursor(op.Move, pos, temp)
+	case Delete:
+		gp.editorDelRune(pos, op.Client, temp)
+	case Newline:
+		gp.editorInsertNewLine(pos, op.Client, temp)
 	}
 }
 
@@ -224,9 +226,8 @@ func (gp *gopad) applyOps(commits []Op) {
 		if op.Client == gp.id {
 			newpoint = op.ID
 		}
-		// TODO: update gp.doc
+
 		gp.apply(op, gp.users[op.Client], false)
-		gp.updatePos(op)
 	}
 	gp.doc.View += uint32(len(commits))
 
@@ -239,63 +240,7 @@ func (gp *gopad) applyOps(commits []Op) {
 
 /*** input ***/
 
-func (gp *gopad) editorMoveCursor(key termbox.Key, temp, log bool) {
-
-	if log {
-		// gp.mu.Lock()
-		// gp.opNum++
-		// gp.selfOps = append(gp.selfOps, Op{Type: Insert, ID: gp.opNum, Data: key, View: gp.doc.View, Client: gp.id})
-		// gp.mu.Unlock()
-		// pos = &gp.pos
-	}
-
-	var row *erow
-	if gp.pos.Y < gp.tempdoc.Numrows {
-		row = &gp.tempdoc.Rows[gp.pos.Y]
-	} else {
-		row = nil
-	}
-
-	switch key {
-	case termbox.KeyArrowRight:
-		if row != nil && gp.pos.X < len(row.Chars) {
-			gp.pos.X++
-		} else if row != nil && gp.pos.X >= len(row.Chars) {
-			gp.pos.Y++
-			gp.pos.X = 0
-		}
-	case termbox.KeyArrowLeft:
-		if gp.pos.X != 0 {
-			gp.pos.X--
-		} else if gp.pos.Y > 0 {
-			gp.pos.Y--
-			gp.pos.X = len(gp.tempdoc.Rows[gp.pos.Y].Chars)
-		}
-	case termbox.KeyArrowDown:
-		if gp.pos.Y < gp.tempdoc.Numrows {
-			gp.pos.Y++
-		}
-	case termbox.KeyArrowUp:
-		if gp.pos.Y != 0 {
-			gp.pos.Y--
-		}
-	}
-
-	rowlen := 0
-	if gp.pos.Y < gp.tempdoc.Numrows {
-		rowlen = len(gp.tempdoc.Rows[gp.pos.Y].Chars)
-	}
-	if rowlen < 0 {
-		rowlen = 0
-	}
-	if gp.pos.X > rowlen {
-		gp.pos.X = rowlen
-	}
-}
-
-/*** editor operations ***/
-
-func (gp *gopad) editorInsertRune(key rune, pos *Pos, id uint32, temp, log bool) {
+func (gp *gopad) editorMoveCursor(key termbox.Key, pos *Pos, temp bool) {
 	var doc *Doc
 
 	if temp {
@@ -304,12 +249,67 @@ func (gp *gopad) editorInsertRune(key rune, pos *Pos, id uint32, temp, log bool)
 		doc = &gp.doc
 	}
 
-	if log {
-		gp.mu.Lock()
-		gp.opNum++
-		gp.selfOps = append(gp.selfOps, Op{Type: Insert, ID: gp.opNum, Data: key, View: gp.doc.View, Client: gp.id})
-		gp.mu.Unlock()
-		pos = &gp.pos
+	var row *erow
+	if pos.Y < doc.Numrows {
+		row = &doc.Rows[pos.Y]
+	} else {
+		row = nil
+	}
+
+	switch key {
+	case termbox.KeyArrowRight:
+		if row != nil && pos.X < len(row.Chars) {
+			pos.X++
+		} else if row != nil && pos.X >= len(row.Chars) {
+			pos.Y++
+			pos.X = 0
+		}
+	case termbox.KeyArrowLeft:
+		if pos.X != 0 {
+			pos.X--
+		} else if pos.Y > 0 {
+			pos.Y--
+			pos.X = len(doc.Rows[pos.Y].Chars)
+		}
+	case termbox.KeyArrowDown:
+		if pos.Y < doc.Numrows {
+			pos.Y++
+		}
+	case termbox.KeyArrowUp:
+		if pos.Y != 0 {
+			pos.Y--
+		}
+	case termbox.KeyHome:
+		pos.X = 0
+		return
+	case termbox.KeyEnd:
+		if pos.Y < doc.Numrows {
+			pos.X = len(doc.Rows[pos.Y].Chars)
+		}
+		return
+	}
+
+	rowlen := 0
+	if pos.Y < doc.Numrows {
+		rowlen = len(doc.Rows[pos.Y].Chars)
+	}
+	if rowlen < 0 {
+		rowlen = 0
+	}
+	if pos.X > rowlen {
+		pos.X = rowlen
+	}
+}
+
+/*** editor operations ***/
+
+func (gp *gopad) editorInsertRune(key rune, pos *Pos, id uint32, temp bool) {
+	var doc *Doc
+
+	if temp {
+		doc = &gp.tempdoc
+	} else {
+		doc = &gp.doc
 	}
 
 	if pos.Y == doc.Numrows {
@@ -317,59 +317,131 @@ func (gp *gopad) editorInsertRune(key rune, pos *Pos, id uint32, temp, log bool)
 	}
 
 	doc.rowInsertRune(pos.X, pos.Y, key, id, temp)
+
+	if !temp {
+		for k, npos := range gp.users {
+			if k != id {
+				// update other positions
+				if pos.Y == npos.Y && pos.X <= npos.X {
+					npos.X++
+					// if updating own pos then update temp pos also
+					if k == gp.id {
+						gp.pos.X++
+					}
+				}
+			}
+		}
+	}
+
 	pos.X++
 }
 
-func (gp *gopad) editorInsertNewLine(temp bool) {
+func (gp *gopad) editorInsertNewLine(pos *Pos, id uint32, temp bool) {
 	var doc *Doc
 	if temp {
-		gp.mu.Lock()
-		gp.selfOps = append(gp.selfOps, Op{Type: Newline, ID: gp.opNum, View: gp.doc.View, Client: gp.id})
-		gp.opNum++
-		gp.mu.Unlock()
 		doc = &gp.tempdoc
 	} else {
 		doc = &gp.doc
 	}
 
-	if gp.pos.X == 0 {
-		doc.insertRow(gp.pos.Y, "", []bool{}, []uint32{})
+	if pos.X == 0 {
+		doc.insertRow(pos.Y, "", []bool{}, []uint32{})
 	} else {
-		row := &doc.Rows[gp.pos.Y]
-		doc.insertRow(gp.pos.Y+1, row.Chars[gp.pos.X:], row.Temp[gp.pos.X:], row.Author[gp.pos.X:])
-		row.Chars = row.Chars[:gp.pos.X]
+		row := &doc.Rows[pos.Y]
+		doc.insertRow(pos.Y+1, row.Chars[pos.X:], row.Temp[pos.X:], row.Author[pos.X:])
+		doc.Rows[pos.Y].Chars = row.Chars[:pos.X]
+		doc.Rows[pos.Y].Temp = row.Temp[:pos.X]
+		doc.Rows[pos.Y].Author = row.Author[:pos.X]
 	}
-	gp.pos.Y++
-	gp.pos.X = 0
+
+	if !temp {
+		for k, npos := range gp.users {
+			if k != id {
+				// update other positions
+				if pos.Y == npos.Y && pos.X <= npos.X {
+					npos.Y++
+					npos.X -= pos.X
+					// if updating own pos then update temp pos also
+					if k == gp.id {
+						gp.pos.Y++
+						gp.pos.X -= pos.X
+					}
+				} else if pos.Y < npos.Y {
+					npos.Y++
+					// if updating own pos then update temp pos also
+					if k == gp.id {
+						gp.pos.Y++
+					}
+				}
+			}
+		}
+	}
+	pos.Y++
+	pos.X = 0
 }
 
-func (gp *gopad) editorDelRune(temp bool) {
+func (gp *gopad) editorDelRune(pos *Pos, id uint32, temp bool) {
 	var doc *Doc
+
 	if temp {
-		// write operation to self commit log
-		gp.mu.Lock()
-		gp.selfOps = append(gp.selfOps, Op{Type: Delete, ID: gp.opNum, View: gp.doc.View, Client: gp.id})
-		gp.opNum++
-		gp.mu.Unlock()
 		doc = &gp.tempdoc
 	} else {
 		doc = &gp.doc
 	}
 
-	if gp.pos.Y == doc.Numrows {
+	if pos.Y == doc.Numrows {
 		return
 	}
-	if gp.pos.X == 0 && gp.pos.Y == 0 {
+	if pos.X == 0 && pos.Y == 0 {
 		return
 	}
 
-	if gp.pos.X > 0 {
-		doc.rowDelRune(gp.pos.X, gp.pos.Y)
-		gp.pos.X--
+	if pos.X > 0 {
+		doc.rowDelRune(pos.X, pos.Y)
+		if !temp {
+			for k, npos := range gp.users {
+				if k != id {
+					// update other positions
+					if pos.Y == npos.Y && pos.X <= npos.X {
+						npos.X--
+						// if updating own pos then update temp pos also
+						if k == gp.id {
+							gp.pos.X--
+						}
+					}
+				}
+			}
+		}
+		pos.X--
 	} else {
-		gp.pos.X = len(gp.doc.Rows[gp.pos.Y-1].Chars)
-		doc.editorDelRow(gp.pos.Y)
-		gp.pos.Y--
+		oldOffset := len(doc.Rows[pos.Y-1].Chars)
+		doc.editorDelRow(pos.Y)
+
+		if !temp {
+			for k, npos := range gp.users {
+				if k != id {
+					// update other positions
+					if pos.Y == npos.Y {
+						npos.X += oldOffset
+						npos.Y--
+						// if updating own pos then update temp pos also
+						if k == gp.id {
+							gp.pos.X += oldOffset
+							gp.pos.Y--
+						}
+					} else if pos.Y < npos.Y {
+						npos.Y--
+						// if updating own pos then update temp pos also
+						if k == gp.id {
+							gp.pos.Y--
+						}
+					}
+				}
+			}
+		}
+
+		pos.X = oldOffset
+		pos.Y--
 	}
 }
 

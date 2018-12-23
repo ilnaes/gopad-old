@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/binary"
+	"github.com/nsf/termbox-go"
 	// 	"bytes"
 	// "bufio"
 	// "net"
@@ -18,12 +19,7 @@ const (
 	Delete
 	Newline
 	Init
-	Left
-	Right
-	Up
-	Down
-	Home
-	End
+	Move
 )
 
 type Err string
@@ -50,6 +46,7 @@ type Doc struct {
 type Op struct {
 	Type int
 	Data rune
+	Move termbox.Key
 	// X, Y   int
 	View   uint32
 	ID     uint32
@@ -164,6 +161,8 @@ func (doc *Doc) editorDelRow(at int) {
 	}
 
 	doc.Rows[at-1].Chars += doc.Rows[at].Chars
+	doc.Rows[at-1].Temp = append(doc.Rows[at-1].Temp, doc.Rows[at].Temp...)
+	doc.Rows[at-1].Author = append(doc.Rows[at-1].Author, doc.Rows[at].Author...)
 	copy(doc.Rows[at:], doc.Rows[at+1:])
 	doc.Rows = doc.Rows[:len(doc.Rows)-1]
 	doc.Numrows--
