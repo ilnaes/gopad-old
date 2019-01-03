@@ -19,6 +19,7 @@ type Server struct {
 	px        Paxos
 	mu        sync.Mutex
 	users     map[uint32]uint32
+	numusers  int
 
 	// handler  map[string]HandleFunc
 	// m sync.RWMutex
@@ -59,6 +60,11 @@ func (s *Server) handleOp(ops []Op) {
 func (s *Server) Init(arg InitArg, reply *InitReply) error {
 	log.Println("Sending initial...")
 
+	if s.numusers >= MAXUSERS {
+		reply.Err = "Full"
+		return nil
+	}
+
 	s.commitLog = append(s.commitLog, Op{Type: Init, Client: arg.Client})
 	s.view++
 
@@ -81,6 +87,8 @@ func (s *Server) Init(arg InitArg, reply *InitReply) error {
 	}
 	reply.Commits = buf
 	reply.Err = "OK"
+
+	s.numusers++
 
 	return nil
 }

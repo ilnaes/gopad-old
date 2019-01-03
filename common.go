@@ -7,6 +7,10 @@ import (
 	"net/rpc"
 )
 
+var COLORS = []termbox.Attribute{16, 10, 11, 15}
+
+const MAXUSERS = 3
+
 const (
 	Port = ":6060"
 )
@@ -119,6 +123,109 @@ func (doc *Doc) copy() *Doc {
 	return &d
 }
 
+/*** input ***/
+
+func editorMoveCursor(pos *Pos, doc *Doc, key termbox.Key) {
+
+	var row *erow
+	if pos.Y < doc.Numrows {
+		row = &doc.Rows[pos.Y]
+	} else {
+		row = nil
+	}
+
+	switch key {
+	case termbox.KeyArrowRight:
+		if row != nil && pos.X < len(row.Chars) {
+			pos.X++
+		} else if row != nil && pos.X >= len(row.Chars) {
+			pos.Y++
+			pos.X = 0
+		}
+	case termbox.KeyArrowLeft:
+		if pos.X != 0 {
+			pos.X--
+		} else if pos.Y > 0 {
+			pos.Y--
+			pos.X = len(doc.Rows[pos.Y].Chars)
+		}
+	case termbox.KeyArrowDown:
+		if pos.Y < doc.Numrows {
+			pos.Y++
+		}
+	case termbox.KeyArrowUp:
+		if pos.Y != 0 {
+			pos.Y--
+		}
+	case termbox.KeyHome:
+		pos.X = 0
+		return
+	case termbox.KeyEnd:
+		if pos.Y < doc.Numrows {
+			pos.X = len(doc.Rows[pos.Y].Chars)
+		}
+		return
+	}
+
+	rowlen := 0
+	if pos.Y < doc.Numrows {
+		rowlen = len(doc.Rows[pos.Y].Chars)
+	}
+	if rowlen < 0 {
+		rowlen = 0
+	}
+	if pos.X > rowlen {
+		pos.X = rowlen
+	}
+}
+
+/*** editor operations ***/
+
+func editorInsertRune(pos *Pos, doc *Doc, key rune, id uint32, temp bool) {
+	if pos.Y == doc.Numrows {
+		doc.insertRow(pos.Y, "", []bool{}, []uint32{})
+	}
+
+	doc.rowInsertRune(pos.X, pos.Y, key, id, temp)
+
+	pos.X++
+}
+
+func editorInsertNewLine(pos *Pos, doc *Doc) {
+	if pos.X == 0 {
+		doc.insertRow(pos.Y, "", []bool{}, []uint32{})
+	} else {
+		row := &doc.Rows[pos.Y]
+		doc.insertRow(pos.Y+1, row.Chars[pos.X:], row.Temp[pos.X:], row.Author[pos.X:])
+		doc.Rows[pos.Y].Chars = row.Chars[:pos.X]
+		doc.Rows[pos.Y].Temp = row.Temp[:pos.X]
+		doc.Rows[pos.Y].Author = row.Author[:pos.X]
+	}
+
+	pos.Y++
+	pos.X = 0
+}
+
+func editorDelRune(pos *Pos, doc *Doc) {
+	if pos.Y == doc.Numrows {
+		return
+	}
+	if pos.X == 0 && pos.Y == 0 {
+		return
+	}
+
+	if pos.X > 0 {
+		doc.rowDelRune(pos.X, pos.Y)
+		pos.X--
+	} else {
+		oldOffset := len(doc.Rows[pos.Y-1].Chars)
+		doc.editorDelRow(pos.Y)
+
+		pos.X = oldOffset
+		pos.Y--
+	}
+}
+
 /*** row operations ***/
 
 func (doc *Doc) insertRow(at int, s string, t []bool, a []uint32) {
@@ -162,6 +269,7 @@ func (doc *Doc) rowDelRune(atx, aty int) {
 
 	row.Chars = row.Chars[0:atx-1] + row.Chars[atx:]
 	row.Temp = append(row.Temp[0:atx-1], row.Temp[atx:]...)
+	row.Author = append(row.Author[0:atx-1], row.Author[atx:]...)
 }
 
 func (doc *Doc) editorDelRow(at int) {
