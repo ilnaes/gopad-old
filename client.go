@@ -251,62 +251,15 @@ func (gp *gopad) applyOps(commits []Op) {
 
 		gp.apply(op, gp.users[op.Client], &gp.doc, false)
 
-		// update other positions
 		if op.Type != Move && op.Type != Init {
 			for k, npos := range gp.users {
+				// update other positions
 				if k != op.Client {
+					updatePos(pos, npos, op.Type, oldOffset)
 
-					switch op.Type {
-					case Insert:
-						if pos.Y == npos.Y && pos.X <= npos.X {
-							npos.X++
-							// if updating own pos (so op.Client is not us) then update temp pos also
-							if k == gp.id {
-								gp.pos.X++
-							}
-						}
-					case Newline:
-						if pos.Y == npos.Y && pos.X <= npos.X {
-							npos.Y++
-							npos.X -= pos.X
-
-							if k == gp.id {
-								gp.pos.Y++
-								gp.pos.X -= pos.X
-							}
-						} else if pos.Y < npos.Y {
-							npos.Y++
-
-							if k == gp.id {
-								gp.pos.Y++
-							}
-						}
-					case Delete:
-						if pos.X > 0 {
-							if pos.Y == npos.Y && pos.X <= npos.X {
-								npos.X--
-
-								if k == gp.id {
-									gp.pos.X--
-								}
-							}
-						} else if pos.Y > 0 {
-							if pos.Y == npos.Y {
-								npos.X += oldOffset
-								npos.Y--
-
-								if k == gp.id {
-									gp.pos.X += oldOffset
-									gp.pos.Y--
-								}
-							} else if pos.Y < npos.Y {
-								npos.Y--
-
-								if k == gp.id {
-									gp.pos.Y--
-								}
-							}
-						}
+					if k == gp.id {
+						// if updating self, then from someone else so update temp pos also
+						updatePos(pos, &gp.pos, op.Type, oldOffset)
 					}
 				}
 			}

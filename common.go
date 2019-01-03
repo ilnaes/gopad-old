@@ -226,6 +226,36 @@ func editorDelRune(pos *Pos, doc *Doc) {
 	}
 }
 
+func updatePos(pos Pos, npos *Pos, opType int, oldOffset int) {
+	switch opType {
+	case Insert:
+		if pos.Y == npos.Y && pos.X <= npos.X {
+			npos.X++
+		}
+	case Newline:
+		if pos.Y == npos.Y && pos.X <= npos.X {
+			npos.Y++
+			npos.X -= pos.X
+		} else if pos.Y < npos.Y {
+			npos.Y++
+		}
+	case Delete:
+		if pos.X > 0 {
+			if pos.Y == npos.Y && pos.X <= npos.X {
+				npos.X--
+			}
+		} else if pos.Y > 0 {
+			if pos.Y == npos.Y {
+				npos.X += oldOffset
+				npos.Y--
+
+			} else if pos.Y < npos.Y {
+				npos.Y--
+			}
+		}
+	}
+}
+
 /*** row operations ***/
 
 func (doc *Doc) insertRow(at int, s string, t []bool, a []uint32) {
