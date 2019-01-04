@@ -7,7 +7,8 @@ import (
 	"net/rpc"
 )
 
-var COLORS = []termbox.Attribute{16, 10, 11, 15}
+var COLORS = []termbox.Attribute{16, 10, 11, 15, 0}
+var CURSORS = []termbox.Attribute{253, 211, 121, 124, 0}
 
 const MAXUSERS = 3
 
@@ -150,7 +151,7 @@ func editorMoveCursor(pos *Pos, doc *Doc, key termbox.Key) {
 			pos.X = len(doc.Rows[pos.Y].Chars)
 		}
 	case termbox.KeyArrowDown:
-		if pos.Y < doc.Numrows {
+		if pos.Y < doc.Numrows-1 {
 			pos.Y++
 		}
 	case termbox.KeyArrowUp:

@@ -15,8 +15,10 @@ import (
 )
 
 const (
-	pushDelay = 1 * time.Second
-	pullDelay = 1 * time.Second
+	pushDelay = 200 * time.Millisecond
+	pullDelay = 200 * time.Millisecond
+	// pushDelay = 1 * time.Second
+	// pullDelay = 1 * time.Second
 )
 
 type gopad struct {
@@ -40,6 +42,7 @@ type gopad struct {
 	commitpoint uint32
 
 	users      map[uint32]*Pos // last known position of other users
+	tempUsers  map[uint32]*Pos
 	userColors map[uint32]int
 	connection *rpc.Client
 	numusers   int
@@ -50,6 +53,7 @@ func StartClient(server string) {
 	gp.id = rand.Uint32()
 	gp.srv = server + Port
 	gp.users = make(map[uint32]*Pos)
+	gp.tempUsers = make(map[uint32]*Pos)
 	gp.userColors = make(map[uint32]int)
 
 	gp.userColors[gp.id] = 0
@@ -108,8 +112,10 @@ mainloop:
 			// case termbox.KeyTab:
 			// 	edit_box.InsertRune('\t')
 			case termbox.KeySpace:
-				gp.logOp([]Op{Op{Type: Insert, Data: ' ', View: gp.doc.View, Client: gp.id}})
+				op := Op{Type: Insert, Data: ' ', View: gp.doc.View, Client: gp.id}
+				gp.logOp([]Op{op})
 				editorInsertRune(&gp.pos, &gp.tempdoc, ' ', gp.id, true)
+				// gp.apply(op, &gp.pos, &gp.tempdoc, true)
 			case termbox.KeyEnter:
 				gp.logOp([]Op{Op{Type: Newline, View: gp.doc.View, Client: gp.id}})
 				editorInsertNewLine(&gp.pos, &gp.tempdoc)
@@ -161,7 +167,6 @@ func (gp *gopad) push() {
 		for !ok {
 			var reply OpReply
 			ok = call(gp.srv, "Server.Handle", OpArg{Data: buf}, &reply, false)
-			gp.status = string(reply.Err)
 			if ok {
 				gp.mu.Lock()
 				if reply.Err == "OK" {
@@ -193,9 +198,12 @@ func (gp *gopad) pull() {
 					gp.tempdoc = *gp.doc.copy()
 
 					// apply ops not yet commited
-					temppos := *gp.users[gp.id]
+					for k, v := range gp.users {
+						gp.tempUsers[k] = v
+					}
+					gp.pos = *gp.users[gp.id]
 					for _, op := range gp.selfOps {
-						gp.apply(op, &temppos, &gp.tempdoc, true)
+						gp.apply(op, &gp.pos, &gp.tempdoc, true)
 					}
 					gp.mu.Unlock()
 
@@ -216,10 +224,11 @@ func (gp *gopad) apply(op Op, pos *Pos, doc *Doc, temp bool) {
 		editorInsertRune(pos, doc, op.Data, op.Client, temp)
 	case Init:
 		gp.users[op.Client] = &Pos{}
+		gp.tempUsers[op.Client] = &Pos{}
 		gp.numusers++
-		if op.Client != gp.id {
-			gp.userColors[op.Client] = gp.numusers
-		}
+		// if op.Client != gp.id {
+		gp.userColors[op.Client] = gp.numusers
+		// }
 	case Move:
 		editorMoveCursor(pos, doc, op.Move)
 	case Delete:
@@ -309,20 +318,61 @@ func (gp *gopad) drawRows() {
 	for ; i < gp.screenrows; i++ {
 		filerow := i + gp.rowoff
 		if filerow < gp.tempdoc.Numrows {
+
+			// draw gutters
 			termbox.SetCell(0, i, '~', coldef, coldef)
-			x := 0
-			for k, s := range gp.tempdoc.Rows[filerow].Chars {
-				if k >= gp.coloff {
-					if gp.tempdoc.Rows[filerow].Temp[k] {
-						termbox.SetCell(x+1, i, s, 251, coldef)
-					} else {
-						auth := gp.tempdoc.Rows[filerow].Author[k]
-						color := COLORS[gp.userColors[auth]]
-						termbox.SetCell(x+1, i, s, color, coldef)
+
+			if len(gp.tempdoc.Rows[filerow].Chars) > 0 {
+
+				for k, s := range gp.tempdoc.Rows[filerow].Chars {
+
+					if k >= gp.coloff {
+
+						bg := termbox.ColorDefault
+
+						// draw other cursors
+						for user, pos := range gp.users {
+							if user != gp.id {
+								if pos.X == k && pos.Y == filerow {
+									bg = CURSORS[gp.userColors[user]]
+								}
+							}
+						}
+
+						if gp.tempdoc.Rows[filerow].Temp[k] {
+							// is temp char?
+							termbox.SetCell(k+1, i, s, 251, bg)
+						} else {
+
+							// select color based on author
+							auth := gp.tempdoc.Rows[filerow].Author[k]
+							color := COLORS[gp.userColors[auth]]
+							termbox.SetCell(k+1, i, s, color, bg)
+						}
+						if k+1 > gp.screencols {
+							break
+						}
 					}
-					x++
-					if x+1 > gp.screencols {
-						break
+				}
+
+				end := len(gp.tempdoc.Rows[filerow].Chars)
+
+				if end >= gp.coloff && end < gp.coloff+gp.screencols {
+					for user, pos := range gp.users {
+						if user != gp.id {
+							if pos.X == end && pos.Y == filerow {
+								termbox.SetCell(end-gp.coloff+1, i, ' ', 0, CURSORS[gp.userColors[user]])
+							}
+						}
+					}
+				}
+			} else if gp.coloff == 0 {
+				// draw cursor on empty line
+				for user, pos := range gp.users {
+					if user != gp.id {
+						if pos.Y == filerow {
+							termbox.SetCell(1, i, ' ', 0, CURSORS[gp.userColors[user]])
+						}
 					}
 				}
 			}
@@ -335,16 +385,21 @@ func (gp *gopad) drawRows() {
 func (gp *gopad) editorDrawStatusBar() {
 	i := gp.screenrows
 
+	bg := termbox.ColorWhite
+
+	if gp.userColors[gp.id] != 0 {
+		bg = COLORS[gp.userColors[gp.id]]
+	}
 	var j int
 
 	for _, c := range gp.status {
-		termbox.SetCell(j, i, c, termbox.ColorBlack, termbox.ColorWhite)
+		termbox.SetCell(j, i, c, termbox.ColorBlack, bg)
 		j++
 	}
 
 	// draw status bar
 	for ; j < gp.screencols+1; j++ {
-		termbox.SetCell(j, i, ' ', termbox.ColorBlack, termbox.ColorWhite)
+		termbox.SetCell(j, i, ' ', termbox.ColorBlack, bg)
 	}
 
 }
