@@ -151,6 +151,8 @@ func editorMoveCursor(doc *Doc, pos *Pos, key termbox.Key) {
 		row = nil
 	}
 
+	oldRx := editorRowCxToRx(&doc.Rows[pos.Y], pos.X)
+
 	switch key {
 	case termbox.KeyArrowRight:
 		if row != nil && pos.X < len(row.Chars) {
@@ -159,6 +161,7 @@ func editorMoveCursor(doc *Doc, pos *Pos, key termbox.Key) {
 			pos.Y++
 			pos.X = 0
 		}
+		return
 	case termbox.KeyArrowLeft:
 		if pos.X != 0 {
 			pos.X--
@@ -166,6 +169,7 @@ func editorMoveCursor(doc *Doc, pos *Pos, key termbox.Key) {
 			pos.Y--
 			pos.X = len(doc.Rows[pos.Y].Chars)
 		}
+		return
 	case termbox.KeyArrowDown:
 		if pos.Y < doc.Numrows-1 {
 			pos.Y++
@@ -186,13 +190,15 @@ func editorMoveCursor(doc *Doc, pos *Pos, key termbox.Key) {
 
 	rowlen := 0
 	if pos.Y < doc.Numrows {
-		rowlen = len(doc.Rows[pos.Y].Chars)
+		rowlen = editorRowCxToRx(&doc.Rows[pos.Y], len(doc.Rows[pos.Y].Chars))
 	}
 	if rowlen < 0 {
 		rowlen = 0
 	}
-	if pos.X > rowlen {
-		pos.X = rowlen
+	if oldRx > rowlen {
+		pos.X = len(doc.Rows[pos.Y].Chars)
+	} else {
+		pos.X = editorRowRxToCx(&doc.Rows[pos.Y], oldRx)
 	}
 }
 
@@ -288,36 +294,6 @@ func editorDelRune(doc *Doc, users map[uint32]*Pos, id uint32) {
 
 		pos.X = oldOffset
 		pos.Y--
-	}
-}
-
-func updatePos(pos Pos, npos *Pos, opType int, oldOffset int) {
-	switch opType {
-	case Insert:
-		if pos.Y == npos.Y && pos.X <= npos.X {
-			npos.X++
-		}
-	case Newline:
-		if pos.Y == npos.Y && pos.X <= npos.X {
-			npos.Y++
-			npos.X -= pos.X
-		} else if pos.Y < npos.Y {
-			npos.Y++
-		}
-	case Delete:
-		if pos.X > 0 {
-			if pos.Y == npos.Y && pos.X <= npos.X {
-				npos.X--
-			}
-		} else if pos.Y > 0 {
-			if pos.Y == npos.Y {
-				npos.X += oldOffset
-				npos.Y--
-
-			} else if pos.Y < npos.Y {
-				npos.Y--
-			}
-		}
 	}
 }
 
