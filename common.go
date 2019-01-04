@@ -126,7 +126,7 @@ func (doc *Doc) copy() *Doc {
 
 /*** input ***/
 
-func editorMoveCursor(pos *Pos, doc *Doc, key termbox.Key) {
+func editorMoveCursor(doc *Doc, pos *Pos, key termbox.Key) {
 
 	var row *erow
 	if pos.Y < doc.Numrows {
@@ -182,17 +182,30 @@ func editorMoveCursor(pos *Pos, doc *Doc, key termbox.Key) {
 
 /*** editor operations ***/
 
-func editorInsertRune(pos *Pos, doc *Doc, key rune, id uint32, temp bool) {
+func editorInsertRune(doc *Doc, users map[uint32]*Pos, id uint32, key rune, temp bool) {
+	pos := users[id]
+
 	if pos.Y == doc.Numrows {
 		doc.insertRow(pos.Y, "", []bool{}, []uint32{})
 	}
 
 	doc.rowInsertRune(pos.X, pos.Y, key, id, temp)
 
+	for k, npos := range users {
+		// update other positions
+		if k != id {
+			if pos.Y == npos.Y && pos.X <= npos.X {
+				npos.X++
+			}
+		}
+	}
+
 	pos.X++
 }
 
-func editorInsertNewLine(pos *Pos, doc *Doc) {
+func editorInsertNewLine(doc *Doc, users map[uint32]*Pos, id uint32) {
+	pos := users[id]
+
 	if pos.X == 0 {
 		doc.insertRow(pos.Y, "", []bool{}, []uint32{})
 	} else {
@@ -203,11 +216,24 @@ func editorInsertNewLine(pos *Pos, doc *Doc) {
 		doc.Rows[pos.Y].Author = row.Author[:pos.X]
 	}
 
+	for k, npos := range users {
+		// update other positions
+		if k != id {
+			if pos.Y == npos.Y && pos.X <= npos.X {
+				npos.Y++
+				npos.X -= pos.X
+			} else if pos.Y < npos.Y {
+				npos.Y++
+			}
+		}
+	}
+
 	pos.Y++
 	pos.X = 0
 }
 
-func editorDelRune(pos *Pos, doc *Doc) {
+func editorDelRune(doc *Doc, users map[uint32]*Pos, id uint32) {
+	pos := users[id]
 	if pos.Y == doc.Numrows {
 		return
 	}
@@ -217,10 +243,32 @@ func editorDelRune(pos *Pos, doc *Doc) {
 
 	if pos.X > 0 {
 		doc.rowDelRune(pos.X, pos.Y)
+
+		for k, npos := range users {
+			// update other positions
+			if k != id {
+				if pos.Y == npos.Y && pos.X <= npos.X {
+					npos.X--
+				}
+			}
+		}
 		pos.X--
 	} else {
 		oldOffset := len(doc.Rows[pos.Y-1].Chars)
 		doc.editorDelRow(pos.Y)
+
+		for k, npos := range users {
+			// update other positions
+			if k != id {
+				if pos.Y == npos.Y {
+					npos.X += oldOffset
+					npos.Y--
+
+				} else if pos.Y < npos.Y {
+					npos.Y--
+				}
+			}
+		}
 
 		pos.X = oldOffset
 		pos.Y--

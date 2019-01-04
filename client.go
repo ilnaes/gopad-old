@@ -4,12 +4,11 @@ package main
 // https://viewsourcecode.org/snaptoken/kilo/ as well as the editbox demo of termbox-go
 
 import (
-	"bufio"
 	"encoding/json"
 	"github.com/nsf/termbox-go"
 	"log"
 	"math/rand"
-	"net/rpc"
+	// "net/rpc"
 	"sync"
 	"time"
 )
@@ -24,27 +23,24 @@ const (
 type gopad struct {
 	// rx         int
 	srv        string
+	id         uint32
 	screenrows int
 	screencols int
 	rowoff     int
 	coloff     int
-	pos        Pos // current position (possibly not commited)
 	doc        Doc
 	tempdoc    Doc
-	buf        *bufio.ReadWriter
 	mu         sync.Mutex
+	status     string
 
-	status      string
-	id          uint32
 	selfOps     []Op
 	opNum       uint32
 	sentpoint   uint32
 	commitpoint uint32
 
 	users      map[uint32]*Pos // last known position of other users
-	tempUsers  map[uint32]*Pos
+	tempUsers  map[uint32]*Pos // users + temp ops
 	userColors map[uint32]int
-	connection *rpc.Client
 	numusers   int
 }
 
@@ -88,7 +84,7 @@ mainloop:
 				termbox.KeyHome,
 				termbox.KeyEnd:
 				gp.logOp([]Op{Op{Type: Move, Move: ev.Key, View: gp.doc.View, Client: gp.id}})
-				editorMoveCursor(&gp.pos, &gp.tempdoc, ev.Key)
+				editorMoveCursor(&gp.tempdoc, gp.tempUsers[gp.id], ev.Key)
 			// case termbox.KeyPgup, termbox.KeyPgdn:
 			// 	for times := gp.screenrows; times > 0; times-- {
 			// 		var x termbox.Key
@@ -101,28 +97,28 @@ mainloop:
 			// 	}
 			case termbox.KeyBackspace, termbox.KeyBackspace2:
 				gp.logOp([]Op{Op{Type: Delete, View: gp.doc.View, Client: gp.id}})
-				editorDelRune(&gp.pos, &gp.tempdoc)
+				editorDelRune(&gp.tempdoc, gp.tempUsers, gp.id)
 			case termbox.KeyDelete, termbox.KeyCtrlD:
 				gp.logOp([]Op{
 					Op{Type: Move, Move: termbox.KeyArrowRight, View: gp.doc.View, Client: gp.id},
 					Op{Type: Delete, View: gp.doc.View, Client: gp.id},
 				})
-				editorMoveCursor(&gp.pos, &gp.tempdoc, termbox.KeyArrowRight)
-				editorDelRune(&gp.pos, &gp.tempdoc)
+				editorMoveCursor(&gp.tempdoc, gp.tempUsers[gp.id], termbox.KeyArrowRight)
+				editorDelRune(&gp.tempdoc, gp.tempUsers, gp.id)
 			// case termbox.KeyTab:
 			// 	edit_box.InsertRune('\t')
 			case termbox.KeySpace:
 				op := Op{Type: Insert, Data: ' ', View: gp.doc.View, Client: gp.id}
 				gp.logOp([]Op{op})
-				editorInsertRune(&gp.pos, &gp.tempdoc, ' ', gp.id, true)
+				editorInsertRune(&gp.tempdoc, gp.tempUsers, gp.id, ' ', true)
 				// gp.apply(op, &gp.pos, &gp.tempdoc, true)
 			case termbox.KeyEnter:
 				gp.logOp([]Op{Op{Type: Newline, View: gp.doc.View, Client: gp.id}})
-				editorInsertNewLine(&gp.pos, &gp.tempdoc)
+				editorInsertNewLine(&gp.tempdoc, gp.tempUsers, gp.id)
 			default:
 				if ev.Ch != 0 {
 					gp.logOp([]Op{Op{Type: Insert, Data: ev.Ch, View: gp.doc.View, Client: gp.id}})
-					editorInsertRune(&gp.pos, &gp.tempdoc, ev.Ch, gp.id, true)
+					editorInsertRune(&gp.tempdoc, gp.tempUsers, gp.id, ev.Ch, true)
 				}
 			}
 		case termbox.EventError:
@@ -194,16 +190,17 @@ func (gp *gopad) pull() {
 				if len(commits) > 0 {
 					// apply commited ops
 					gp.mu.Lock()
-					gp.applyOps(commits)
+					gp.applyCommits(commits)
 					gp.tempdoc = *gp.doc.copy()
 
 					// apply ops not yet commited
 					for k, v := range gp.users {
-						gp.tempUsers[k] = v
+						x := *v
+						gp.tempUsers[k] = &x
 					}
-					gp.pos = *gp.users[gp.id]
+					// gp.pos = *gp.users[gp.id]
 					for _, op := range gp.selfOps {
-						gp.apply(op, &gp.pos, &gp.tempdoc, true)
+						gp.apply(op, gp.tempUsers, &gp.tempdoc, true)
 					}
 					gp.mu.Unlock()
 
@@ -218,10 +215,10 @@ func (gp *gopad) pull() {
 }
 
 // Update commited ops
-func (gp *gopad) apply(op Op, pos *Pos, doc *Doc, temp bool) {
+func (gp *gopad) apply(op Op, users map[uint32]*Pos, doc *Doc, temp bool) {
 	switch op.Type {
 	case Insert:
-		editorInsertRune(pos, doc, op.Data, op.Client, temp)
+		editorInsertRune(doc, users, op.Client, op.Data, temp)
 	case Init:
 		gp.users[op.Client] = &Pos{}
 		gp.tempUsers[op.Client] = &Pos{}
@@ -230,16 +227,16 @@ func (gp *gopad) apply(op Op, pos *Pos, doc *Doc, temp bool) {
 		gp.userColors[op.Client] = gp.numusers
 		// }
 	case Move:
-		editorMoveCursor(pos, doc, op.Move)
+		editorMoveCursor(doc, users[op.Client], op.Move)
 	case Delete:
-		editorDelRune(pos, doc)
+		editorDelRune(doc, users, op.Client)
 	case Newline:
-		editorInsertNewLine(pos, doc)
+		editorInsertNewLine(doc, users, op.Client)
 	}
 }
 
-// apply commits to doc
-func (gp *gopad) applyOps(commits []Op) {
+// apply ops from commit log
+func (gp *gopad) applyCommits(commits []Op) {
 
 	newpoint := gp.commitpoint
 
@@ -249,30 +246,7 @@ func (gp *gopad) applyOps(commits []Op) {
 			newpoint = op.ID
 		}
 
-		var pos Pos
-		var oldOffset int
-		if op.Type != Init {
-			pos = *(gp.users[op.Client])
-			if op.Type == Delete && pos.Y > 0 {
-				oldOffset = len(gp.doc.Rows[pos.Y-1].Chars)
-			}
-		}
-
-		gp.apply(op, gp.users[op.Client], &gp.doc, false)
-
-		if op.Type != Move && op.Type != Init {
-			for k, npos := range gp.users {
-				// update other positions
-				if k != op.Client {
-					updatePos(pos, npos, op.Type, oldOffset)
-
-					if k == gp.id {
-						// if updating self, then from someone else so update temp pos also
-						updatePos(pos, &gp.pos, op.Type, oldOffset)
-					}
-				}
-			}
-		}
+		gp.apply(op, gp.users, &gp.doc, false)
 	}
 	gp.doc.View += uint32(len(commits))
 
@@ -292,21 +266,24 @@ func (gp *gopad) editorScroll() {
 	// }
 
 	// reposition up
-	if gp.pos.Y < gp.rowoff {
-		gp.rowoff = gp.pos.Y
+
+	pos := gp.tempUsers[gp.id]
+
+	if pos.Y < gp.rowoff {
+		gp.rowoff = pos.Y
 	}
 
 	// reposition down
-	if gp.pos.Y >= gp.rowoff+gp.screenrows {
-		gp.rowoff = gp.pos.Y - gp.screenrows + 1
+	if pos.Y >= gp.rowoff+gp.screenrows {
+		gp.rowoff = pos.Y - gp.screenrows + 1
 	}
 
-	if gp.pos.X < gp.coloff {
-		gp.coloff = gp.pos.X
+	if pos.X < gp.coloff {
+		gp.coloff = pos.X
 	}
 
-	if gp.pos.X >= gp.coloff+gp.screencols {
-		gp.coloff = gp.pos.X - gp.screencols + 1
+	if pos.X >= gp.coloff+gp.screencols {
+		gp.coloff = pos.X - gp.screencols + 1
 	}
 }
 
@@ -331,7 +308,7 @@ func (gp *gopad) drawRows() {
 						bg := termbox.ColorDefault
 
 						// draw other cursors
-						for user, pos := range gp.users {
+						for user, pos := range gp.tempUsers {
 							if user != gp.id {
 								if pos.X == k && pos.Y == filerow {
 									bg = CURSORS[gp.userColors[user]]
@@ -358,7 +335,7 @@ func (gp *gopad) drawRows() {
 				end := len(gp.tempdoc.Rows[filerow].Chars)
 
 				if end >= gp.coloff && end < gp.coloff+gp.screencols {
-					for user, pos := range gp.users {
+					for user, pos := range gp.tempUsers {
 						if user != gp.id {
 							if pos.X == end && pos.Y == filerow {
 								termbox.SetCell(end-gp.coloff+1, i, ' ', 0, CURSORS[gp.userColors[user]])
@@ -368,7 +345,7 @@ func (gp *gopad) drawRows() {
 				}
 			} else if gp.coloff == 0 {
 				// draw cursor on empty line
-				for user, pos := range gp.users {
+				for user, pos := range gp.tempUsers {
 					if user != gp.id {
 						if pos.Y == filerow {
 							termbox.SetCell(1, i, ' ', 0, CURSORS[gp.userColors[user]])
@@ -413,7 +390,7 @@ func (gp *gopad) refreshScreen() {
 	gp.drawRows()
 	gp.editorDrawStatusBar()
 
-	termbox.SetCursor(gp.pos.X-gp.coloff+1, gp.pos.Y-gp.rowoff)
+	termbox.SetCursor(gp.tempUsers[gp.id].X-gp.coloff+1, gp.tempUsers[gp.id].Y-gp.rowoff)
 	termbox.Flush()
 	gp.mu.Unlock()
 }
@@ -442,7 +419,7 @@ func (gp *gopad) editorOpen(server string, view uint32) {
 		}
 
 		if len(c) > 0 {
-			gp.applyOps(c)
+			gp.applyCommits(c)
 		}
 
 		gp.tempdoc = *gp.doc.copy()
