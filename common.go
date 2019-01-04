@@ -5,12 +5,14 @@ import (
 	"github.com/nsf/termbox-go"
 	"log"
 	"net/rpc"
+	"strings"
 )
 
 var COLORS = []termbox.Attribute{16, 10, 11, 15, 0}
 var CURSORS = []termbox.Attribute{253, 211, 121, 124, 0}
 
 const MAXUSERS = 3
+const TABSTOP = 4
 
 const (
 	Port = ":6060"
@@ -27,10 +29,12 @@ const (
 type Err string
 
 type erow struct {
-	Chars  string
-	Temp   []bool
-	Author []uint32
-	// render string
+	Chars      string
+	Temp       []bool
+	Author     []uint32
+	Render     string
+	RenderTemp []bool
+	RenderAuth []uint32
 }
 
 type Pos struct {
@@ -112,7 +116,20 @@ func (row *erow) copy() *erow {
 	copy(t, row.Temp)
 	a := make([]uint32, len(row.Author))
 	copy(a, row.Author)
-	return &erow{Chars: row.Chars, Temp: t, Author: a}
+
+	rt := make([]bool, len(row.RenderTemp))
+	copy(rt, row.RenderTemp)
+	ra := make([]uint32, len(row.RenderTemp))
+	copy(ra, row.RenderAuth)
+
+	return &erow{
+		Chars:      row.Chars,
+		Temp:       t,
+		Author:     a,
+		Render:     row.Render,
+		RenderTemp: rt,
+		RenderAuth: ra,
+	}
 }
 
 func (doc *Doc) copy() *Doc {
@@ -127,7 +144,6 @@ func (doc *Doc) copy() *Doc {
 /*** input ***/
 
 func editorMoveCursor(doc *Doc, pos *Pos, key termbox.Key) {
-
 	var row *erow
 	if pos.Y < doc.Numrows {
 		row = &doc.Rows[pos.Y]
@@ -307,13 +323,14 @@ func updatePos(pos Pos, npos *Pos, opType int, oldOffset int) {
 
 /*** row operations ***/
 
-func (doc *Doc) insertRow(at int, s string, t []bool, a []uint32) {
+func (doc *Doc) insertRow(at int, ch string, temp []bool, auth []uint32) {
 	// doc.Rows = append(doc.Rows, erow{Chars: s})
 	doc.Rows = append(doc.Rows, erow{})
 	copy(doc.Rows[at+1:], doc.Rows[at:])
-	doc.Rows[at] = erow{Chars: s, Temp: t, Author: a}
+	doc.Rows[at] = erow{Chars: ch, Temp: temp, Author: auth}
 	// doc.Rows[doc.Numrows].render = renderRow(s)
 	doc.Numrows++
+	doc.Rows[at].updateRow()
 }
 
 // insert rune into row[aty] at position atx
@@ -336,6 +353,7 @@ func (doc *Doc) rowInsertRune(atx, aty int, key rune, id uint32, temp bool) {
 	row.Author = append(row.Author, 0)
 	copy(row.Author[atx+1:], row.Author[atx:])
 	row.Author[atx] = id
+	row.updateRow()
 }
 
 // delete a rune
@@ -349,6 +367,7 @@ func (doc *Doc) rowDelRune(atx, aty int) {
 	row.Chars = row.Chars[0:atx-1] + row.Chars[atx:]
 	row.Temp = append(row.Temp[0:atx-1], row.Temp[atx:]...)
 	row.Author = append(row.Author[0:atx-1], row.Author[atx:]...)
+	row.updateRow()
 }
 
 func (doc *Doc) editorDelRow(at int) {
@@ -362,4 +381,66 @@ func (doc *Doc) editorDelRow(at int) {
 	copy(doc.Rows[at:], doc.Rows[at+1:])
 	doc.Rows = doc.Rows[:len(doc.Rows)-1]
 	doc.Numrows--
+}
+
+/*** tabs ***/
+
+func editorRowCxToRx(row *erow, atx int) int {
+	rx := 0
+	for j := 0; j < atx; j++ {
+		if row.Chars[j] == '\t' {
+			rx += (TABSTOP - 1) - (rx % TABSTOP)
+		}
+		rx++
+	}
+	return rx
+}
+
+func editorRowRxToCx(row *erow, rx int) int {
+	cur_rx := 0
+	cx := 0
+	for ; cx < len(row.Chars); cx++ {
+		if row.Chars[cx] == '\t' {
+			cur_rx += (TABSTOP - 1) - (cur_rx % TABSTOP)
+		}
+		cur_rx++
+
+		if cur_rx > rx {
+			return cx
+		}
+	}
+	return cx
+}
+
+func (row *erow) updateRow() {
+	tabs := 0
+	for i := 0; i < len(row.Chars); i++ {
+		if row.Chars[i] == '\t' {
+			tabs++
+		}
+	}
+	l := len(row.Chars) + tabs*(TABSTOP-1) + 1
+
+	row.RenderTemp = make([]bool, l)
+	row.RenderAuth = make([]uint32, l)
+
+	var sb strings.Builder
+	x := 0
+	for i, r := range row.Chars {
+		if r == '\t' {
+			for {
+				sb.WriteRune(' ')
+				x++
+				if x%TABSTOP == 0 {
+					break
+				}
+			}
+		} else {
+			sb.WriteRune(r)
+			row.RenderTemp[x] = row.Temp[i]
+			row.RenderAuth[x] = row.Author[i]
+			x++
+		}
+	}
+	row.Render = sb.String()
 }
