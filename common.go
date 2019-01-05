@@ -53,7 +53,7 @@ type Op struct {
 	Move termbox.Key
 	// X, Y   int
 	View   uint32 // last document view seen by user
-	ID     uint32 // sequential number for each user
+	Seq    uint32 // sequential number for each user
 	Client uint32
 }
 

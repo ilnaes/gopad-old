@@ -34,10 +34,10 @@ type gopad struct {
 	mu         sync.Mutex
 	status     string
 
-	selfOps     []Op
-	opNum       uint32
-	sentpoint   uint32
-	commitpoint uint32
+	selfOps      []Op
+	opNum        uint32
+	sentpoint    uint32
+	commitpoints map[uint32]uint32
 
 	tempRUsers map[uint32]int // renderX for each tempPos
 	userColors map[uint32]int
@@ -50,9 +50,11 @@ func StartClient(server string) {
 	gp.srv = server + Port
 	gp.tempRUsers = make(map[uint32]int)
 	gp.userColors = make(map[uint32]int)
+	gp.commitpoints = make(map[uint32]uint32)
 
 	gp.userColors[gp.id] = 0
 
+	gp.status = fmt.Sprintf("STARTING")
 	gp.editorOpen(server+Port, 0)
 
 	err := termbox.Init()
@@ -131,7 +133,7 @@ func (gp *gopad) logOp(ops []Op) {
 	gp.mu.Lock()
 	for _, op := range ops {
 		gp.opNum++
-		op.ID = gp.opNum
+		op.Seq = gp.opNum
 		gp.selfOps = append(gp.selfOps, op)
 	}
 	gp.mu.Unlock()
@@ -141,15 +143,14 @@ func (gp *gopad) logOp(ops []Op) {
 func (gp *gopad) push() {
 	for {
 		gp.mu.Lock()
-		l := uint32(len(gp.selfOps)) + gp.commitpoint
-		if l <= gp.sentpoint {
+		if len(gp.selfOps) == 0 {
 			// no new ops
 			gp.mu.Unlock()
 			time.Sleep(pushDelay)
 			continue
 		}
 		// prepare and send new ops
-		buf, err := json.Marshal(gp.selfOps[gp.sentpoint-gp.commitpoint : len(gp.selfOps)])
+		buf, err := json.Marshal(gp.selfOps)
 		if err != nil {
 			log.Println("Couldn't marshal commits", err)
 			gp.mu.Unlock()
@@ -163,12 +164,12 @@ func (gp *gopad) push() {
 			var reply OpReply
 			ok = call(gp.srv, "Server.Handle", OpArg{Data: buf}, &reply, false)
 			if ok {
-				gp.mu.Lock()
-				if reply.Err == "OK" {
-					// update op sent point
-					gp.sentpoint = l
-				}
-				gp.mu.Unlock()
+				// gp.mu.Lock()
+				// if reply.Err == "OK" {
+				// 	// update op sent point
+				// 	gp.sentpoint = l
+				// }
+				// gp.mu.Unlock()
 			}
 		}
 		time.Sleep(pushDelay)
@@ -183,9 +184,11 @@ func (gp *gopad) pull() {
 		for !ok {
 			var reply QueryReply
 			ok = call(gp.srv, "Server.Query", QueryArg{View: gp.doc.View}, &reply, false)
+
 			if ok && reply.Err == "OK" {
 				var commits []Op
 				json.Unmarshal(reply.Data, &commits)
+
 				if len(commits) > 0 {
 					// apply commited ops
 					gp.mu.Lock()
@@ -234,24 +237,22 @@ func (gp *gopad) apply(op Op, doc *Doc, temp bool) {
 
 // apply ops from commit log
 func (gp *gopad) applyCommits(commits []Op) {
-
-	newpoint := gp.commitpoint
+	oldPoint := gp.commitpoints[gp.id]
 
 	for _, op := range commits {
-		// update commitpoint
-		if op.Client == gp.id {
-			newpoint = op.ID
+		if op.Seq == gp.commitpoints[op.Client]+1 {
+			// apply op and update commitpoint
+			gp.apply(op, &gp.doc, false)
+			gp.commitpoints[op.Client]++
 		}
-
-		gp.apply(op, &gp.doc, false)
 	}
 	gp.doc.View += uint32(len(commits))
 
 	// cut off commiteds
-	if newpoint > gp.commitpoint {
-		gp.selfOps = gp.selfOps[newpoint-gp.commitpoint:]
-		gp.commitpoint = newpoint
+	if gp.commitpoints[gp.id] > oldPoint {
+		gp.selfOps = gp.selfOps[gp.commitpoints[gp.id]-oldPoint:]
 	}
+	gp.status = fmt.Sprintf("%d", len(gp.selfOps))
 }
 
 /*** output ***/
@@ -264,7 +265,6 @@ func (gp *gopad) editorScroll() {
 			gp.tempRUsers[id] = editorRowCxToRx(&gp.tempdoc.Rows[pos.Y], pos.X)
 		}
 	}
-	gp.status = fmt.Sprintf("%d", gp.tempRUsers[gp.id])
 
 	pos := gp.tempdoc.Users[gp.id]
 	// reposition up
@@ -332,7 +332,7 @@ func (gp *gopad) drawRows() {
 				}
 
 				end := len(gp.tempdoc.Rows[filerow].Chars)
-				endR := editorRowCxToRx(&gp.tempdoc.Rows[filerow], end)
+				endR := len(row.Chars)
 
 				// at endpoint?
 				if endR >= gp.coloff && endR < gp.coloff+gp.screencols {
@@ -403,6 +403,9 @@ func (gp *gopad) editorOpen(server string, view uint32) {
 	var reply InitReply
 	ok := call(server, "Server.Init", InitArg{Client: gp.id, View: view}, &reply, false)
 	if ok {
+		gp.selfOps = []Op{Op{Type: Init, Seq: 1, Client: gp.id}}
+		gp.sentpoint = 1
+		gp.opNum = 1
 		var d Doc
 		err := json.Unmarshal(reply.Doc, &d)
 		if err != nil {

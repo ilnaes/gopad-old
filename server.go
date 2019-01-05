@@ -20,7 +20,7 @@ type Server struct {
 	view      uint32
 	px        Paxos
 	mu        sync.Mutex
-	userSeqs  map[uint32]uint32 // last sequence number seen by user
+	userSeqs  map[uint32]uint32 // last sequence number by user
 	userViews map[uint32]uint32 // last reported view number by user
 	numusers  int
 
@@ -48,15 +48,14 @@ func NewServer() *Server {
 func (s *Server) handleOp(ops []Op) {
 	log.Println("Got", len(ops), "ops")
 	s.mu.Lock()
-	start := s.userSeqs[ops[0].Client]
 	for _, c := range ops {
-		if c.ID >= start {
-			log.Println(c)
-			s.commitLog = append(s.commitLog, c)
-			s.view++
+		log.Println(c)
+		s.commitLog = append(s.commitLog, c)
+		s.view++
+		if c.Seq == s.userSeqs[c.Client]+1 {
+			s.userSeqs[c.Client]++
 		}
 	}
-	s.userSeqs[ops[0].Client] += uint32(len(ops))
 	s.mu.Unlock()
 }
 
@@ -68,7 +67,7 @@ func (s *Server) Init(arg InitArg, reply *InitReply) error {
 		return nil
 	}
 
-	s.commitLog = append(s.commitLog, Op{Type: Init, Client: arg.Client})
+	s.commitLog = append(s.commitLog, Op{Type: Init, Client: arg.Client, Seq: 1})
 	s.view++
 
 	s.userSeqs[arg.Client] = 1
@@ -126,7 +125,7 @@ func (s *Server) Handle(arg OpArg, reply *OpReply) error {
 	}
 
 	if len(ops) > 0 {
-		if ops[0].ID > s.userSeqs[ops[0].Client] {
+		if ops[0].Seq > s.userSeqs[ops[0].Client]+1 {
 			// sequence number larger than expected
 			reply.Err = "High"
 			return nil
@@ -134,7 +133,7 @@ func (s *Server) Handle(arg OpArg, reply *OpReply) error {
 
 		if len(ops) > 1 {
 			for i := 1; i < len(ops); i++ {
-				if ops[i].ID != ops[i-1].ID+1 {
+				if ops[i].Seq != ops[i-1].Seq+1 {
 					// out of sequential order
 					reply.Err = "Order"
 					return nil
@@ -148,7 +147,7 @@ func (s *Server) Handle(arg OpArg, reply *OpReply) error {
 			}
 		}
 
-		if ops[len(ops)-1].ID >= s.userSeqs[ops[0].Client] {
+		if ops[len(ops)-1].Seq > s.userSeqs[ops[0].Client] {
 			go s.handleOp(ops)
 		}
 	}
