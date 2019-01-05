@@ -1,7 +1,8 @@
 package main
 
 import (
-	// "encoding/binary"
+	"bytes"
+	"encoding/gob"
 	"github.com/nsf/termbox-go"
 	"log"
 	"net/rpc"
@@ -41,10 +42,17 @@ type Doc struct {
 	Rows  []erow
 	View  uint32
 	Users map[uint32]*Pos // position of users in document
+	Seqs  map[uint32]uint32
+	Id    uint32
+}
 
-	// optional really
-	Numrows int
-	Id      uint32
+// transport version of doc
+type Doc_t struct {
+	Rows  []erow
+	View  uint32
+	Users map[uint32]Pos // position of users in document
+	Seqs  map[uint32]uint32
+	Id    uint32
 }
 
 type Op struct {
@@ -122,14 +130,15 @@ func (row *erow) copy() *erow {
 	}
 }
 
+// copies doc
 func (doc *Doc) copy() *Doc {
-	d := Doc{View: doc.View, Numrows: doc.Numrows}
+	d := Doc{View: doc.View}
 	d.Rows = make([]erow, len(doc.Rows))
 	for i := 0; i < len(d.Rows); i++ {
 		d.Rows[i] = *doc.Rows[i].copy()
 	}
-	d.Users = make(map[uint32]*Pos)
 
+	d.Users = make(map[uint32]*Pos)
 	for k, v := range doc.Users {
 		pos := *v
 		d.Users[k] = &pos
@@ -137,12 +146,67 @@ func (doc *Doc) copy() *Doc {
 	return &d
 }
 
+// convert doc to byte array
+func docToBytes(doc *Doc) ([]byte, error) {
+	d := Doc_t{View: doc.View}
+	d.Rows = make([]erow, len(doc.Rows))
+	for i := 0; i < len(d.Rows); i++ {
+		d.Rows[i] = *doc.Rows[i].copy()
+	}
+
+	// need to dereference map targets to send
+	d.Users = make(map[uint32]Pos)
+	for k, v := range doc.Users {
+		d.Users[k] = *v
+	}
+	d.Seqs = doc.Seqs
+
+	var b bytes.Buffer
+
+	enc := gob.NewEncoder(&b)
+	err := enc.Encode(d)
+
+	if err != nil {
+		panic(err)
+	}
+
+	return b.Bytes(), err
+}
+
+// convert byte array back to doc
+func bytesToDoc(b []byte, d *Doc) error {
+	buf := bytes.NewBuffer(b)
+
+	dec := gob.NewDecoder(buf)
+	var doc Doc_t
+	err := dec.Decode(&doc)
+	if err != nil {
+		log.Fatal("decode:", err)
+	}
+
+	d.View = doc.View
+
+	d.Rows = make([]erow, len(doc.Rows))
+	for i := 0; i < len(d.Rows); i++ {
+		d.Rows[i] = *doc.Rows[i].copy()
+	}
+
+	d.Seqs = doc.Seqs
+
+	d.Users = make(map[uint32]*Pos)
+	for k, v := range doc.Users {
+		d.Users[k] = &v
+	}
+
+	return err
+}
+
 /*** input ***/
 
 func editorMoveCursor(doc *Doc, id uint32, key termbox.Key) {
 	pos := doc.Users[id]
 	var row *erow
-	if pos.Y < doc.Numrows {
+	if pos.Y < len(doc.Rows) {
 		row = &doc.Rows[pos.Y]
 	} else {
 		row = nil
@@ -168,7 +232,7 @@ func editorMoveCursor(doc *Doc, id uint32, key termbox.Key) {
 		}
 		return
 	case termbox.KeyArrowDown:
-		if pos.Y < doc.Numrows-1 {
+		if pos.Y < len(doc.Rows)-1 {
 			pos.Y++
 		}
 	case termbox.KeyArrowUp:
@@ -179,14 +243,14 @@ func editorMoveCursor(doc *Doc, id uint32, key termbox.Key) {
 		pos.X = 0
 		return
 	case termbox.KeyEnd:
-		if pos.Y < doc.Numrows {
+		if pos.Y < len(doc.Rows) {
 			pos.X = len(doc.Rows[pos.Y].Chars)
 		}
 		return
 	}
 
 	rowlen := 0
-	if pos.Y < doc.Numrows {
+	if pos.Y < len(doc.Rows) {
 		rowlen = editorRowCxToRx(&doc.Rows[pos.Y], len(doc.Rows[pos.Y].Chars))
 	}
 	if rowlen < 0 {
@@ -204,7 +268,7 @@ func editorMoveCursor(doc *Doc, id uint32, key termbox.Key) {
 func editorInsertRune(doc *Doc, id uint32, key rune, temp bool) {
 	pos := doc.Users[id]
 
-	if pos.Y == doc.Numrows {
+	if pos.Y == len(doc.Rows) {
 		doc.insertRow(pos.Y, "", []bool{}, []uint32{})
 	}
 
@@ -253,7 +317,7 @@ func editorInsertNewLine(doc *Doc, id uint32) {
 
 func editorDelRune(doc *Doc, id uint32) {
 	pos := doc.Users[id]
-	if pos.Y == doc.Numrows {
+	if pos.Y == len(doc.Rows) {
 		return
 	}
 	if pos.X == 0 && pos.Y == 0 {
@@ -301,7 +365,6 @@ func (doc *Doc) insertRow(at int, ch string, temp []bool, auth []uint32) {
 	doc.Rows = append(doc.Rows, erow{})
 	copy(doc.Rows[at+1:], doc.Rows[at:])
 	doc.Rows[at] = erow{Chars: ch, Temp: temp, Author: auth}
-	doc.Numrows++
 }
 
 // insert rune into row[aty] at position atx
@@ -340,7 +403,7 @@ func (doc *Doc) rowDelRune(atx, aty int) {
 }
 
 func (doc *Doc) editorDelRow(at int) {
-	if at < 0 || at >= doc.Numrows {
+	if at < 0 || at >= len(doc.Rows) {
 		return
 	}
 
@@ -349,7 +412,6 @@ func (doc *Doc) editorDelRow(at int) {
 	doc.Rows[at-1].Author = append(doc.Rows[at-1].Author, doc.Rows[at].Author...)
 	copy(doc.Rows[at:], doc.Rows[at+1:])
 	doc.Rows = doc.Rows[:len(doc.Rows)-1]
-	doc.Numrows--
 }
 
 /*** tabs ***/

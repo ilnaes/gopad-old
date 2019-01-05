@@ -35,11 +35,25 @@ func NewServer() *Server {
 	}
 	defer file.Close()
 
-	e := Server{doc: Doc{Id: rand.Uint32()}, userSeqs: make(map[uint32]uint32), userViews: make(map[uint32]uint32), commitLog: make([]Op, 0)}
+	doc := Doc{
+		Id:    rand.Uint32(),
+		Seqs:  make(map[uint32]uint32),
+		Users: make(map[uint32]*Pos),
+	}
+	e := Server{
+		doc:       doc,
+		userSeqs:  make(map[uint32]uint32),
+		userViews: make(map[uint32]uint32),
+		commitLog: make([]Op, 0),
+	}
 	scanner := bufio.NewScanner(file)
 	for scanner.Scan() {
 		e.doc.Rows = append(e.doc.Rows,
-			erow{Chars: scanner.Text(), Temp: make([]bool, len(scanner.Text())), Author: make([]uint32, len(scanner.Text()))})
+			erow{
+				Chars:  scanner.Text(),
+				Temp:   make([]bool, len(scanner.Text())),
+				Author: make([]uint32, len(scanner.Text())),
+			})
 	}
 
 	return &e
@@ -73,7 +87,7 @@ func (s *Server) Init(arg InitArg, reply *InitReply) error {
 	s.userSeqs[arg.Client] = 1
 
 	// marshal document and send back
-	buf, err := json.Marshal(s.doc)
+	buf, err := docToBytes(&s.doc)
 	if err != nil {
 		log.Println("Couldn't send document", err)
 		reply.Err = "Encode"
