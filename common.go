@@ -5,7 +5,6 @@ import (
 	"github.com/nsf/termbox-go"
 	"log"
 	"net/rpc"
-	"strings"
 )
 
 var COLORS = []termbox.Attribute{16, 10, 11, 15, 0}
@@ -29,12 +28,9 @@ const (
 type Err string
 
 type erow struct {
-	Chars      string
-	Temp       []bool
-	Author     []uint32
-	Render     string
-	RenderTemp []bool
-	RenderAuth []uint32
+	Chars  string
+	Temp   []bool // really shouldn't be here but whatever
+	Author []uint32
 }
 
 type Pos struct {
@@ -42,11 +38,13 @@ type Pos struct {
 }
 
 type Doc struct {
-	Rows []erow
-	View uint32
+	Rows  []erow
+	View  uint32
+	Users map[uint32]*Pos // position of users in document
 
 	// optional really
 	Numrows int
+	Id      uint32
 }
 
 type Op struct {
@@ -54,8 +52,8 @@ type Op struct {
 	Data rune
 	Move termbox.Key
 	// X, Y   int
-	View   uint32
-	ID     uint32
+	View   uint32 // last document view seen by user
+	ID     uint32 // sequential number for each user
 	Client uint32
 }
 
@@ -117,18 +115,10 @@ func (row *erow) copy() *erow {
 	a := make([]uint32, len(row.Author))
 	copy(a, row.Author)
 
-	rt := make([]bool, len(row.RenderTemp))
-	copy(rt, row.RenderTemp)
-	ra := make([]uint32, len(row.RenderTemp))
-	copy(ra, row.RenderAuth)
-
 	return &erow{
-		Chars:      row.Chars,
-		Temp:       t,
-		Author:     a,
-		Render:     row.Render,
-		RenderTemp: rt,
-		RenderAuth: ra,
+		Chars:  row.Chars,
+		Temp:   t,
+		Author: a,
 	}
 }
 
@@ -138,12 +128,19 @@ func (doc *Doc) copy() *Doc {
 	for i := 0; i < len(d.Rows); i++ {
 		d.Rows[i] = *doc.Rows[i].copy()
 	}
+	d.Users = make(map[uint32]*Pos)
+
+	for k, v := range doc.Users {
+		pos := *v
+		d.Users[k] = &pos
+	}
 	return &d
 }
 
 /*** input ***/
 
-func editorMoveCursor(doc *Doc, pos *Pos, key termbox.Key) {
+func editorMoveCursor(doc *Doc, id uint32, key termbox.Key) {
+	pos := doc.Users[id]
 	var row *erow
 	if pos.Y < doc.Numrows {
 		row = &doc.Rows[pos.Y]
@@ -204,8 +201,8 @@ func editorMoveCursor(doc *Doc, pos *Pos, key termbox.Key) {
 
 /*** editor operations ***/
 
-func editorInsertRune(doc *Doc, users map[uint32]*Pos, id uint32, key rune, temp bool) {
-	pos := users[id]
+func editorInsertRune(doc *Doc, id uint32, key rune, temp bool) {
+	pos := doc.Users[id]
 
 	if pos.Y == doc.Numrows {
 		doc.insertRow(pos.Y, "", []bool{}, []uint32{})
@@ -213,7 +210,7 @@ func editorInsertRune(doc *Doc, users map[uint32]*Pos, id uint32, key rune, temp
 
 	doc.rowInsertRune(pos.X, pos.Y, key, id, temp)
 
-	for k, npos := range users {
+	for k, npos := range doc.Users {
 		// update other positions
 		if k != id {
 			if pos.Y == npos.Y && pos.X <= npos.X {
@@ -225,8 +222,8 @@ func editorInsertRune(doc *Doc, users map[uint32]*Pos, id uint32, key rune, temp
 	pos.X++
 }
 
-func editorInsertNewLine(doc *Doc, users map[uint32]*Pos, id uint32) {
-	pos := users[id]
+func editorInsertNewLine(doc *Doc, id uint32) {
+	pos := doc.Users[id]
 
 	if pos.X == 0 {
 		doc.insertRow(pos.Y, "", []bool{}, []uint32{})
@@ -238,7 +235,7 @@ func editorInsertNewLine(doc *Doc, users map[uint32]*Pos, id uint32) {
 		doc.Rows[pos.Y].Author = row.Author[:pos.X]
 	}
 
-	for k, npos := range users {
+	for k, npos := range doc.Users {
 		// update other positions
 		if k != id {
 			if pos.Y == npos.Y && pos.X <= npos.X {
@@ -254,8 +251,8 @@ func editorInsertNewLine(doc *Doc, users map[uint32]*Pos, id uint32) {
 	pos.X = 0
 }
 
-func editorDelRune(doc *Doc, users map[uint32]*Pos, id uint32) {
-	pos := users[id]
+func editorDelRune(doc *Doc, id uint32) {
+	pos := doc.Users[id]
 	if pos.Y == doc.Numrows {
 		return
 	}
@@ -266,7 +263,7 @@ func editorDelRune(doc *Doc, users map[uint32]*Pos, id uint32) {
 	if pos.X > 0 {
 		doc.rowDelRune(pos.X, pos.Y)
 
-		for k, npos := range users {
+		for k, npos := range doc.Users {
 			// update other positions
 			if k != id {
 				if pos.Y == npos.Y && pos.X <= npos.X {
@@ -279,7 +276,7 @@ func editorDelRune(doc *Doc, users map[uint32]*Pos, id uint32) {
 		oldOffset := len(doc.Rows[pos.Y-1].Chars)
 		doc.editorDelRow(pos.Y)
 
-		for k, npos := range users {
+		for k, npos := range doc.Users {
 			// update other positions
 			if k != id {
 				if pos.Y == npos.Y {
@@ -304,9 +301,7 @@ func (doc *Doc) insertRow(at int, ch string, temp []bool, auth []uint32) {
 	doc.Rows = append(doc.Rows, erow{})
 	copy(doc.Rows[at+1:], doc.Rows[at:])
 	doc.Rows[at] = erow{Chars: ch, Temp: temp, Author: auth}
-	// doc.Rows[doc.Numrows].render = renderRow(s)
 	doc.Numrows++
-	doc.Rows[at].updateRow()
 }
 
 // insert rune into row[aty] at position atx
@@ -329,7 +324,6 @@ func (doc *Doc) rowInsertRune(atx, aty int, key rune, id uint32, temp bool) {
 	row.Author = append(row.Author, 0)
 	copy(row.Author[atx+1:], row.Author[atx:])
 	row.Author[atx] = id
-	row.updateRow()
 }
 
 // delete a rune
@@ -343,7 +337,6 @@ func (doc *Doc) rowDelRune(atx, aty int) {
 	row.Chars = row.Chars[0:atx-1] + row.Chars[atx:]
 	row.Temp = append(row.Temp[0:atx-1], row.Temp[atx:]...)
 	row.Author = append(row.Author[0:atx-1], row.Author[atx:]...)
-	row.updateRow()
 }
 
 func (doc *Doc) editorDelRow(at int) {
@@ -386,37 +379,4 @@ func editorRowRxToCx(row *erow, rx int) int {
 		}
 	}
 	return cx
-}
-
-func (row *erow) updateRow() {
-	tabs := 0
-	for i := 0; i < len(row.Chars); i++ {
-		if row.Chars[i] == '\t' {
-			tabs++
-		}
-	}
-	l := len(row.Chars) + tabs*(TABSTOP-1) + 1
-
-	row.RenderTemp = make([]bool, l)
-	row.RenderAuth = make([]uint32, l)
-
-	var sb strings.Builder
-	x := 0
-	for i, r := range row.Chars {
-		if r == '\t' {
-			for {
-				sb.WriteRune(' ')
-				x++
-				if x%TABSTOP == 0 {
-					break
-				}
-			}
-		} else {
-			sb.WriteRune(r)
-			row.RenderTemp[x] = row.Temp[i]
-			row.RenderAuth[x] = row.Author[i]
-			x++
-		}
-	}
-	row.Render = sb.String()
 }

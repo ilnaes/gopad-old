@@ -10,6 +10,7 @@ import (
 	"log"
 	"math/rand"
 	// "net/rpc"
+	"strings"
 	"sync"
 	"time"
 )
@@ -38,9 +39,7 @@ type gopad struct {
 	sentpoint   uint32
 	commitpoint uint32
 
-	users      map[uint32]*Pos // last known position of other users
-	tempUsers  map[uint32]*Pos // users + temp ops
-	tempRUsers map[uint32]int  // renderX for each tempPos
+	tempRUsers map[uint32]int // renderX for each tempPos
 	userColors map[uint32]int
 	numusers   int
 }
@@ -49,8 +48,6 @@ func StartClient(server string) {
 	var gp gopad
 	gp.id = rand.Uint32()
 	gp.srv = server + Port
-	gp.users = make(map[uint32]*Pos)
-	gp.tempUsers = make(map[uint32]*Pos)
 	gp.tempRUsers = make(map[uint32]int)
 	gp.userColors = make(map[uint32]int)
 
@@ -86,7 +83,7 @@ mainloop:
 				termbox.KeyHome,
 				termbox.KeyEnd:
 				gp.logOp([]Op{Op{Type: Move, Move: ev.Key, View: gp.doc.View, Client: gp.id}})
-				editorMoveCursor(&gp.tempdoc, gp.tempUsers[gp.id], ev.Key)
+				editorMoveCursor(&gp.tempdoc, gp.id, ev.Key)
 			// case termbox.KeyPgup, termbox.KeyPgdn:
 			// 	for times := gp.screenrows; times > 0; times-- {
 			// 		var x termbox.Key
@@ -99,28 +96,28 @@ mainloop:
 			// 	}
 			case termbox.KeyBackspace, termbox.KeyBackspace2:
 				gp.logOp([]Op{Op{Type: Delete, View: gp.doc.View, Client: gp.id}})
-				editorDelRune(&gp.tempdoc, gp.tempUsers, gp.id)
+				editorDelRune(&gp.tempdoc, gp.id)
 			case termbox.KeyDelete, termbox.KeyCtrlD:
 				gp.logOp([]Op{
 					Op{Type: Move, Move: termbox.KeyArrowRight, View: gp.doc.View, Client: gp.id},
 					Op{Type: Delete, View: gp.doc.View, Client: gp.id},
 				})
-				editorMoveCursor(&gp.tempdoc, gp.tempUsers[gp.id], termbox.KeyArrowRight)
-				editorDelRune(&gp.tempdoc, gp.tempUsers, gp.id)
+				editorMoveCursor(&gp.tempdoc, gp.id, termbox.KeyArrowRight)
+				editorDelRune(&gp.tempdoc, gp.id)
 			case termbox.KeyTab:
 				gp.logOp([]Op{Op{Type: Insert, Data: '\t', View: gp.doc.View, Client: gp.id}})
-				editorInsertRune(&gp.tempdoc, gp.tempUsers, gp.id, '\t', true)
+				editorInsertRune(&gp.tempdoc, gp.id, '\t', true)
 			case termbox.KeySpace:
 				gp.logOp([]Op{Op{Type: Insert, Data: ' ', View: gp.doc.View, Client: gp.id}})
-				editorInsertRune(&gp.tempdoc, gp.tempUsers, gp.id, ' ', true)
+				editorInsertRune(&gp.tempdoc, gp.id, ' ', true)
 				// gp.apply(op, &gp.pos, &gp.tempdoc, true)
 			case termbox.KeyEnter:
 				gp.logOp([]Op{Op{Type: Newline, View: gp.doc.View, Client: gp.id}})
-				editorInsertNewLine(&gp.tempdoc, gp.tempUsers, gp.id)
+				editorInsertNewLine(&gp.tempdoc, gp.id)
 			default:
 				if ev.Ch != 0 {
 					gp.logOp([]Op{Op{Type: Insert, Data: ev.Ch, View: gp.doc.View, Client: gp.id}})
-					editorInsertRune(&gp.tempdoc, gp.tempUsers, gp.id, ev.Ch, true)
+					editorInsertRune(&gp.tempdoc, gp.id, ev.Ch, true)
 				}
 			}
 		case termbox.EventError:
@@ -196,13 +193,13 @@ func (gp *gopad) pull() {
 					gp.tempdoc = *gp.doc.copy()
 
 					// apply ops not yet commited
-					for k, v := range gp.users {
+					for k, v := range gp.doc.Users {
 						x := *v
-						gp.tempUsers[k] = &x
+						gp.tempdoc.Users[k] = &x
 					}
 					// gp.pos = *gp.users[gp.id]
 					for _, op := range gp.selfOps {
-						gp.apply(op, gp.tempUsers, &gp.tempdoc, true)
+						gp.apply(op, &gp.tempdoc, true)
 					}
 					gp.mu.Unlock()
 
@@ -217,23 +214,21 @@ func (gp *gopad) pull() {
 }
 
 // Update commited ops
-func (gp *gopad) apply(op Op, users map[uint32]*Pos, doc *Doc, temp bool) {
+func (gp *gopad) apply(op Op, doc *Doc, temp bool) {
 	switch op.Type {
 	case Insert:
-		editorInsertRune(doc, users, op.Client, op.Data, temp)
+		editorInsertRune(doc, op.Client, op.Data, temp)
 	case Init:
-		gp.users[op.Client] = &Pos{}
-		gp.tempUsers[op.Client] = &Pos{}
+		doc.Users[op.Client] = &Pos{}
 		gp.numusers++
-		// if op.Client != gp.id {
 		gp.userColors[op.Client] = gp.numusers
 		// }
 	case Move:
-		editorMoveCursor(doc, users[op.Client], op.Move)
+		editorMoveCursor(doc, op.Client, op.Move)
 	case Delete:
-		editorDelRune(doc, users, op.Client)
+		editorDelRune(doc, op.Client)
 	case Newline:
-		editorInsertNewLine(doc, users, op.Client)
+		editorInsertNewLine(doc, op.Client)
 	}
 }
 
@@ -248,7 +243,7 @@ func (gp *gopad) applyCommits(commits []Op) {
 			newpoint = op.ID
 		}
 
-		gp.apply(op, gp.users, &gp.doc, false)
+		gp.apply(op, &gp.doc, false)
 	}
 	gp.doc.View += uint32(len(commits))
 
@@ -263,7 +258,7 @@ func (gp *gopad) applyCommits(commits []Op) {
 
 func (gp *gopad) editorScroll() {
 
-	for id, pos := range gp.tempUsers {
+	for id, pos := range gp.tempdoc.Users {
 		gp.tempRUsers[id] = 0
 		if pos.Y < gp.doc.Numrows {
 			gp.tempRUsers[id] = editorRowCxToRx(&gp.tempdoc.Rows[pos.Y], pos.X)
@@ -271,7 +266,7 @@ func (gp *gopad) editorScroll() {
 	}
 	gp.status = fmt.Sprintf("%d", gp.tempRUsers[gp.id])
 
-	pos := gp.tempUsers[gp.id]
+	pos := gp.tempdoc.Users[gp.id]
 	// reposition up
 
 	if pos.Y < gp.rowoff {
@@ -301,17 +296,18 @@ func (gp *gopad) drawRows() {
 		filerow := i + gp.rowoff
 		if filerow < gp.tempdoc.Numrows {
 
+			row := gp.tempdoc.Rows[filerow].renderRow()
+
 			// draw gutters
 			termbox.SetCell(0, i, '~', coldef, coldef)
 
-			if len(gp.tempdoc.Rows[filerow].Render) > 0 {
-
-				for k, s := range gp.tempdoc.Rows[filerow].Render {
+			if len(row.Chars) > 0 {
+				for k, s := range row.Chars {
 					if k >= gp.coloff {
 						bg := termbox.ColorDefault
 
 						// draw other cursors
-						for user, pos := range gp.tempUsers {
+						for user, pos := range gp.tempdoc.Users {
 							if user != gp.id {
 								if gp.tempRUsers[user] == k && pos.Y == filerow {
 									bg = CURSORS[gp.userColors[user]]
@@ -319,13 +315,13 @@ func (gp *gopad) drawRows() {
 							}
 						}
 
-						if gp.tempdoc.Rows[filerow].RenderTemp[k] {
+						if row.Temp[k] {
 							// is temp char?
 							termbox.SetCell(k+1, i, s, 251, bg)
 						} else {
 
 							// select color based on author
-							auth := gp.tempdoc.Rows[filerow].RenderAuth[k]
+							auth := row.Author[k]
 							color := COLORS[gp.userColors[auth]]
 							termbox.SetCell(k+1, i, s, color, bg)
 						}
@@ -340,7 +336,7 @@ func (gp *gopad) drawRows() {
 
 				// at endpoint?
 				if endR >= gp.coloff && endR < gp.coloff+gp.screencols {
-					for user, pos := range gp.tempUsers {
+					for user, pos := range gp.tempdoc.Users {
 						if user != gp.id {
 							if pos.X == end && pos.Y == filerow {
 								termbox.SetCell(endR-gp.coloff+1, i, ' ', 0, CURSORS[gp.userColors[user]])
@@ -350,7 +346,7 @@ func (gp *gopad) drawRows() {
 				}
 			} else if gp.coloff == 0 {
 				// draw cursor on empty line
-				for user, pos := range gp.tempUsers {
+				for user, pos := range gp.tempdoc.Users {
 					if user != gp.id {
 						if pos.Y == filerow {
 							termbox.SetCell(1, i, ' ', 0, CURSORS[gp.userColors[user]])
@@ -395,7 +391,7 @@ func (gp *gopad) refreshScreen() {
 	gp.drawRows()
 	gp.editorDrawStatusBar()
 
-	termbox.SetCursor(gp.tempRUsers[gp.id]-gp.coloff+1, gp.tempUsers[gp.id].Y-gp.rowoff)
+	termbox.SetCursor(gp.tempRUsers[gp.id]-gp.coloff+1, gp.tempdoc.Users[gp.id].Y-gp.rowoff)
 	termbox.Flush()
 	gp.mu.Unlock()
 }
@@ -422,6 +418,7 @@ func (gp *gopad) editorOpen(server string, view uint32) {
 		for _, row := range d.Rows {
 			gp.doc.insertRow(gp.doc.Numrows, row.Chars, row.Temp, row.Author)
 		}
+		gp.doc.Users = make(map[uint32]*Pos)
 
 		if len(c) > 0 {
 			gp.applyCommits(c)
@@ -430,9 +427,9 @@ func (gp *gopad) editorOpen(server string, view uint32) {
 		gp.tempdoc = *gp.doc.copy()
 
 		// update positions
-		for user, pos := range gp.users {
+		for user, pos := range gp.doc.Users {
 			x := *pos
-			gp.tempUsers[user] = &x
+			gp.tempdoc.Users[user] = &x
 			gp.tempRUsers[user] = editorRowCxToRx(&gp.tempdoc.Rows[pos.Y], pos.X)
 		}
 	} else {
@@ -448,20 +445,38 @@ func (gp *gopad) initEditor() {
 	gp.screencols--
 }
 
-// rpc caller
-// func call(srv string, rpcname string, args interface{}, reply interface{}) bool {
-// 	// attempt to dial
-// 	c, err := rpc.Dial("tcp", srv)
-// 	if err != nil {
-// 		// log.Println("Couldn't connect to", srv)
-// 		return false
-// 	}
-// 	defer c.Close()
+func (row *erow) renderRow() *erow {
+	newrow := erow{}
 
-// 	err = c.Call(rpcname, args, reply)
-// 	if err != nil {
-// 		// log.Println(err)
-// 		return false
-// 	}
-// 	return true
-// }
+	tabs := 0
+	for i := 0; i < len(row.Chars); i++ {
+		if row.Chars[i] == '\t' {
+			tabs++
+		}
+	}
+	l := len(row.Chars) + tabs*(TABSTOP-1) + 1
+
+	newrow.Temp = make([]bool, l)
+	newrow.Author = make([]uint32, l)
+
+	var sb strings.Builder
+	x := 0
+	for i, r := range row.Chars {
+		if r == '\t' {
+			for {
+				sb.WriteRune(' ')
+				x++
+				if x%TABSTOP == 0 {
+					break
+				}
+			}
+		} else {
+			sb.WriteRune(r)
+			newrow.Temp[x] = row.Temp[i]
+			newrow.Author[x] = row.Author[i]
+			x++
+		}
+	}
+	newrow.Chars = sb.String()
+	return &newrow
+}

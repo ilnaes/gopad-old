@@ -5,10 +5,12 @@ import (
 	// "encoding/binary"
 	"encoding/json"
 	"log"
+	"math/rand"
 	"net"
 	"net/rpc"
 	"os"
 	"sync"
+	"time"
 )
 
 type Server struct {
@@ -18,7 +20,8 @@ type Server struct {
 	view      uint32
 	px        Paxos
 	mu        sync.Mutex
-	users     map[uint32]uint32
+	userSeqs  map[uint32]uint32 // last sequence number seen by user
+	userViews map[uint32]uint32 // last reported view number by user
 	numusers  int
 
 	// handler  map[string]HandleFunc
@@ -32,7 +35,7 @@ func NewServer() *Server {
 	}
 	defer file.Close()
 
-	e := Server{doc: Doc{}, users: make(map[uint32]uint32), commitLog: make([]Op, 0)}
+	e := Server{doc: Doc{Id: rand.Uint32()}, userSeqs: make(map[uint32]uint32), userViews: make(map[uint32]uint32), commitLog: make([]Op, 0)}
 	scanner := bufio.NewScanner(file)
 	for scanner.Scan() {
 		e.doc.Rows = append(e.doc.Rows,
@@ -45,7 +48,7 @@ func NewServer() *Server {
 func (s *Server) handleOp(ops []Op) {
 	log.Println("Got", len(ops), "ops")
 	s.mu.Lock()
-	start := s.users[ops[0].Client]
+	start := s.userSeqs[ops[0].Client]
 	for _, c := range ops {
 		if c.ID >= start {
 			log.Println(c)
@@ -53,7 +56,7 @@ func (s *Server) handleOp(ops []Op) {
 			s.view++
 		}
 	}
-	s.users[ops[0].Client] += uint32(len(ops))
+	s.userSeqs[ops[0].Client] += uint32(len(ops))
 	s.mu.Unlock()
 }
 
@@ -68,7 +71,7 @@ func (s *Server) Init(arg InitArg, reply *InitReply) error {
 	s.commitLog = append(s.commitLog, Op{Type: Init, Client: arg.Client})
 	s.view++
 
-	s.users[arg.Client] = 1
+	s.userSeqs[arg.Client] = 1
 
 	// marshal document and send back
 	buf, err := json.Marshal(s.doc)
@@ -123,7 +126,7 @@ func (s *Server) Handle(arg OpArg, reply *OpReply) error {
 	}
 
 	if len(ops) > 0 {
-		if ops[0].ID > s.users[ops[0].Client] {
+		if ops[0].ID > s.userSeqs[ops[0].Client] {
 			// sequence number larger than expected
 			reply.Err = "High"
 			return nil
@@ -145,7 +148,7 @@ func (s *Server) Handle(arg OpArg, reply *OpReply) error {
 			}
 		}
 
-		if ops[len(ops)-1].ID >= s.users[ops[0].Client] {
+		if ops[len(ops)-1].ID >= s.userSeqs[ops[0].Client] {
 			go s.handleOp(ops)
 		}
 	}
@@ -156,6 +159,12 @@ func (s *Server) Handle(arg OpArg, reply *OpReply) error {
 
 // apply log
 func (s *Server) update() {
+	for true {
+		s.mu.Lock()
+
+		s.mu.Unlock()
+		time.Sleep(time.Second)
+	}
 }
 
 func (s *Server) start() {
