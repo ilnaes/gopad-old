@@ -14,15 +14,16 @@ import (
 )
 
 type Server struct {
-	listener  net.Listener
-	commitLog []Op
-	doc       Doc
-	view      uint32
-	px        Paxos
-	mu        sync.Mutex
-	userSeqs  map[uint32]uint32 // last sequence number by user
-	userViews map[uint32]uint32 // last reported view number by user
-	numusers  int
+	listener    net.Listener
+	commitLog   []Op
+	doc         Doc
+	view        uint32
+	px          Paxos
+	mu          sync.Mutex
+	userSeqs    map[uint32]uint32 // last sequence number by user
+	userViews   map[uint32]uint32 // last reported view number by user
+	numusers    int
+	commitpoint uint32
 
 	// handler  map[string]HandleFunc
 	// m sync.RWMutex

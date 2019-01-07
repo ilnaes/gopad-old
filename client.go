@@ -193,7 +193,6 @@ func (gp *gopad) pull() {
 					gp.applyCommits(commits)
 
 					// cut off commiteds
-					gp.status = fmt.Sprintf("Old %d, New %d, Num: %d", oldPoint, gp.doc.Seqs[gp.id], len(gp.selfOps))
 					if gp.doc.Seqs[gp.id] > oldPoint {
 						gp.selfOps = gp.selfOps[gp.doc.Seqs[gp.id]-oldPoint:]
 					}
@@ -205,7 +204,7 @@ func (gp *gopad) pull() {
 					}
 					// apply ops not yet commited
 					for _, op := range gp.selfOps {
-						gp.apply(op, &gp.tempdoc, true)
+						gp.tempdoc.apply(op, true)
 					}
 					gp.mu.Unlock()
 
@@ -219,32 +218,18 @@ func (gp *gopad) pull() {
 	}
 }
 
-// Update commited ops
-func (gp *gopad) apply(op Op, doc *Doc, temp bool) {
-	switch op.Type {
-	case Insert:
-		editorInsertRune(doc, op.Client, op.Data, temp)
-	case Init:
-		doc.Users[op.Client] = &Pos{}
-		gp.numusers++
-		gp.userColors[op.Client] = gp.numusers
-		// }
-	case Move:
-		editorMoveCursor(doc, op.Client, op.Move)
-	case Delete:
-		editorDelRune(doc, op.Client)
-	case Newline:
-		editorInsertNewLine(doc, op.Client)
-	}
-}
-
 // apply ops from commit log
 func (gp *gopad) applyCommits(commits []Op) {
 	for _, op := range commits {
 		if op.Seq == gp.doc.Seqs[op.Client]+1 {
 			// apply op and update commitpoint
-			gp.apply(op, &gp.doc, false)
+			gp.doc.apply(op, false)
 			gp.doc.Seqs[op.Client]++
+
+			if op.Type == Init {
+				gp.numusers++
+				gp.userColors[op.Client] = gp.numusers
+			}
 		}
 	}
 	gp.doc.View += uint32(len(commits))
@@ -273,11 +258,11 @@ func (gp *gopad) editorScroll() {
 		gp.rowoff = pos.Y - gp.screenrows + 1
 	}
 
-	if pos.X < gp.coloff {
+	if gp.tempRUsers[gp.id] < gp.coloff {
 		gp.coloff = gp.tempRUsers[gp.id]
 	}
 
-	if pos.X >= gp.coloff+gp.screencols {
+	if gp.tempRUsers[gp.id] >= gp.coloff+gp.screencols {
 		gp.coloff = gp.tempRUsers[gp.id] - gp.screencols + 1
 	}
 }
@@ -312,13 +297,13 @@ func (gp *gopad) drawRows() {
 
 						if row.Temp[k] {
 							// is temp char?
-							termbox.SetCell(k+1, i, s, 251, bg)
+							termbox.SetCell(k+1-gp.coloff, i, s, 251, bg)
 						} else {
 
 							// select color based on author
 							auth := row.Author[k]
 							color := COLORS[gp.userColors[auth]]
-							termbox.SetCell(k+1, i, s, color, bg)
+							termbox.SetCell(k+1-gp.coloff, i, s, color, bg)
 						}
 						if k+1 > gp.screencols {
 							break
@@ -409,15 +394,10 @@ func (gp *gopad) editorOpen(server string, view uint32) {
 			log.Fatal("Couldn't decode document")
 		}
 
-		gp.selfOps = []Op{Op{Type: Init, Seq: 1, Client: gp.id}}
 		gp.opNum = 1
 
-		oldPoint := gp.doc.Seqs[gp.id]
 		if len(c) > 0 {
 			gp.applyCommits(c)
-		}
-		if gp.doc.Seqs[gp.id] > oldPoint {
-			gp.selfOps = gp.selfOps[gp.doc.Seqs[gp.id]-oldPoint:]
 		}
 
 		gp.tempdoc = *gp.doc.copy()

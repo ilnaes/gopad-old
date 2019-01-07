@@ -201,6 +201,23 @@ func bytesToDoc(b []byte, d *Doc) error {
 	return err
 }
 
+// Update commited ops
+func (doc *Doc) apply(op Op, temp bool) {
+	switch op.Type {
+	case Insert:
+		editorInsertRune(doc, op.Client, op.Data, temp)
+	case Init:
+		doc.Users[op.Client] = &Pos{}
+		// }
+	case Move:
+		editorMoveCursor(doc, op.Client, op.Move)
+	case Delete:
+		editorDelRune(doc, op.Client)
+	case Newline:
+		editorInsertNewLine(doc, op.Client)
+	}
+}
+
 /*** input ***/
 
 func editorMoveCursor(doc *Doc, id uint32, key termbox.Key) {
@@ -293,7 +310,11 @@ func editorInsertNewLine(doc *Doc, id uint32) {
 		doc.insertRow(pos.Y, "", []bool{}, []uint32{})
 	} else {
 		row := &doc.Rows[pos.Y]
-		doc.insertRow(pos.Y+1, row.Chars[pos.X:], row.Temp[pos.X:], row.Author[pos.X:])
+		t := make([]bool, len(row.Temp)-pos.X)
+		a := make([]uint32, len(row.Temp)-pos.X)
+		copy(t, row.Temp[pos.X:])
+		copy(a, row.Author[pos.X:])
+		doc.insertRow(pos.Y+1, row.Chars[pos.X:], t, a)
 		doc.Rows[pos.Y].Chars = row.Chars[:pos.X]
 		doc.Rows[pos.Y].Temp = row.Temp[:pos.X]
 		doc.Rows[pos.Y].Author = row.Author[:pos.X]
@@ -387,6 +408,7 @@ func (doc *Doc) rowInsertRune(atx, aty int, key rune, id uint32, temp bool) {
 	row.Author = append(row.Author, 0)
 	copy(row.Author[atx+1:], row.Author[atx:])
 	row.Author[atx] = id
+
 }
 
 // delete a rune
