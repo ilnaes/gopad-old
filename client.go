@@ -10,7 +10,6 @@ import (
 	"log"
 	"math/rand"
 	// "net/rpc"
-	"os"
 	"strings"
 	"sync"
 	"time"
@@ -55,20 +54,20 @@ func StartClient(server string) {
 	gp.editorOpen(server+Port, 0)
 	gp.status = fmt.Sprintf("%d", gp.doc.View)
 
-	if len(gp.doc.Users) > 1 {
-		f, err := os.Create("tmp1")
-		if err != nil {
-			log.Fatal(err)
-		}
+	// 	if len(gp.doc.Users) > 1 {
+	// 		f, err := os.Create("tmp1")
+	// 		if err != nil {
+	// 			log.Fatal(err)
+	// 		}
 
-		for _, r := range gp.doc.Rows {
-			f.WriteString(r.Chars + string('\n'))
-		}
-		f.Sync()
-		f.Close()
-		os.Rename("tmp1", "tmp")
+	// 		for _, r := range gp.doc.Rows {
+	// 			f.WriteString(r.Chars + string('\n'))
+	// 		}
+	// 		f.Sync()
+	// 		f.Close()
+	// 		os.Rename("tmp1", "tmp")
 
-	}
+	// 	}
 
 	err := termbox.Init()
 	if err != nil {
@@ -197,7 +196,7 @@ func (gp *gopad) pull() {
 
 		for !ok {
 			var reply QueryReply
-			ok = call(gp.srv, "Server.Query", QueryArg{View: gp.doc.View}, &reply, false)
+			ok = call(gp.srv, "Server.Query", QueryArg{View: gp.doc.View, Client: gp.id}, &reply, false)
 
 			if ok && reply.Err == "OK" {
 				var commits []Op

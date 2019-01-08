@@ -120,6 +120,9 @@ func (s *Server) Query(arg QueryArg, reply *QueryReply) error {
 	}
 
 	s.mu.Lock()
+	if s.userViews[arg.Client] < arg.View {
+		s.userViews[arg.Client] = arg.View
+	}
 	buf, err := json.Marshal(s.commitLog[idx-s.discardpoint : s.commitpoint-s.discardpoint])
 	s.mu.Unlock()
 
@@ -211,20 +214,21 @@ func (s *Server) update() {
 				s.doc.View++
 			}
 
-			min := 0
-			for _, v := range s.userViews {
-				if min == 0 {
-					min = v
-				} else if min > v {
-					min = v
-				}
-			}
-			if s.discardpoint < min {
-				s.commitLog = s.commitLog[min-s.discardpoint:]
-				s.discardpoint = min
-			}
 		}
 
+		min := 0
+		for _, v := range s.userViews {
+			if min == 0 {
+				min = v
+			} else if min > v {
+				min = v
+			}
+		}
+		if s.discardpoint < min {
+			s.commitLog = s.commitLog[min-s.discardpoint:]
+			log.Printf("Chopped %d from log.  New length: %d\n", min-s.discardpoint, len(s.commitLog))
+			s.discardpoint = min
+		}
 		s.mu.Unlock()
 		time.Sleep(250 * time.Millisecond)
 	}

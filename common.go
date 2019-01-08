@@ -72,7 +72,8 @@ type InitArg struct {
 }
 
 type QueryArg struct {
-	View int
+	View   int
+	Client uint32
 }
 
 type OpArg struct {
