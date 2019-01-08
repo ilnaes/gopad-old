@@ -24,6 +24,7 @@ const (
 	Newline
 	Init
 	Move
+	Save
 )
 
 type Err string
@@ -40,7 +41,7 @@ type Pos struct {
 
 type Doc struct {
 	Rows  []erow
-	View  uint32
+	View  int
 	Users map[uint32]*Pos // position of users in document
 	Seqs  map[uint32]uint32
 	Id    uint32
@@ -49,7 +50,7 @@ type Doc struct {
 // transport version of doc
 type Doc_t struct {
 	Rows  []erow
-	View  uint32
+	View  int
 	Users map[uint32]Pos // position of users in document
 	Seqs  map[uint32]uint32
 	Id    uint32
@@ -60,18 +61,18 @@ type Op struct {
 	Data rune
 	Move termbox.Key
 	// X, Y   int
-	View   uint32 // last document view seen by user
+	View   int    // last document view seen by user
 	Seq    uint32 // sequential number for each user
 	Client uint32
 }
 
 type InitArg struct {
 	Client uint32
-	View   uint32
+	View   int
 }
 
 type QueryArg struct {
-	View uint32
+	View int
 }
 
 type OpArg struct {
@@ -138,6 +139,12 @@ func (doc *Doc) copy() *Doc {
 		d.Rows[i] = *doc.Rows[i].copy()
 	}
 
+	d.Seqs = make(map[uint32]uint32, len(doc.Seqs))
+
+	for k, v := range doc.Seqs {
+		d.Seqs[k] = v
+	}
+
 	d.Users = make(map[uint32]*Pos)
 	for k, v := range doc.Users {
 		pos := *v
@@ -159,7 +166,11 @@ func docToBytes(doc *Doc) ([]byte, error) {
 	for k, v := range doc.Users {
 		d.Users[k] = *v
 	}
-	d.Seqs = doc.Seqs
+	d.Seqs = make(map[uint32]uint32)
+
+	for k, v := range doc.Seqs {
+		d.Seqs[k] = v
+	}
 
 	var b bytes.Buffer
 
@@ -177,8 +188,8 @@ func docToBytes(doc *Doc) ([]byte, error) {
 func bytesToDoc(b []byte, d *Doc) error {
 	buf := bytes.NewBuffer(b)
 
-	dec := gob.NewDecoder(buf)
 	var doc Doc_t
+	dec := gob.NewDecoder(buf)
 	err := dec.Decode(&doc)
 	if err != nil {
 		log.Fatal("decode:", err)
@@ -192,10 +203,10 @@ func bytesToDoc(b []byte, d *Doc) error {
 	}
 
 	d.Seqs = doc.Seqs
-
 	d.Users = make(map[uint32]*Pos)
 	for k, v := range doc.Users {
-		d.Users[k] = &v
+		x := v
+		d.Users[k] = &x
 	}
 
 	return err
@@ -215,6 +226,8 @@ func (doc *Doc) apply(op Op, temp bool) {
 		editorDelRune(doc, op.Client)
 	case Newline:
 		editorInsertNewLine(doc, op.Client)
+	default:
+		break
 	}
 }
 

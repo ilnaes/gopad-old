@@ -10,14 +10,15 @@ import (
 	"log"
 	"math/rand"
 	// "net/rpc"
+	"os"
 	"strings"
 	"sync"
 	"time"
 )
 
 const (
-	pushDelay = 200 * time.Millisecond
-	pullDelay = 200 * time.Millisecond
+	pushDelay = 250 * time.Millisecond
+	pullDelay = 250 * time.Millisecond
 	// pushDelay = 1 * time.Second
 	// pullDelay = 1 * time.Second
 )
@@ -51,8 +52,23 @@ func StartClient(server string) {
 
 	gp.userColors[gp.id] = 0
 
-	gp.status = fmt.Sprintf("STARTING")
 	gp.editorOpen(server+Port, 0)
+	gp.status = fmt.Sprintf("%d", gp.doc.View)
+
+	if len(gp.doc.Users) > 1 {
+		f, err := os.Create("tmp1")
+		if err != nil {
+			log.Fatal(err)
+		}
+
+		for _, r := range gp.doc.Rows {
+			f.WriteString(r.Chars + string('\n'))
+		}
+		f.Sync()
+		f.Close()
+		os.Rename("tmp1", "tmp")
+
+	}
 
 	err := termbox.Init()
 	if err != nil {
@@ -75,6 +91,8 @@ mainloop:
 			switch ev.Key {
 			case termbox.KeyCtrlC:
 				break mainloop
+			case termbox.KeyCtrlS:
+				gp.logOp([]Op{Op{Type: Save, View: gp.doc.View, Client: gp.id}})
 			case termbox.KeyArrowLeft,
 				termbox.KeyArrowRight,
 				termbox.KeyArrowUp,
@@ -221,6 +239,7 @@ func (gp *gopad) pull() {
 // apply ops from commit log
 func (gp *gopad) applyCommits(commits []Op) {
 	for _, op := range commits {
+		// gp.status = fmt.Sprintf("%d %v", gp.doc.Seqs[op.Client], commits)
 		if op.Seq == gp.doc.Seqs[op.Client]+1 {
 			// apply op and update commitpoint
 			gp.doc.apply(op, false)
@@ -231,8 +250,8 @@ func (gp *gopad) applyCommits(commits []Op) {
 				gp.userColors[op.Client] = gp.numusers
 			}
 		}
+		gp.doc.View++
 	}
-	gp.doc.View += uint32(len(commits))
 }
 
 /*** output ***/
@@ -379,37 +398,45 @@ func (gp *gopad) refreshScreen() {
 /*** file i/o ***/
 
 // get file from server
-func (gp *gopad) editorOpen(server string, view uint32) {
+func (gp *gopad) editorOpen(server string, view int) {
 	var reply InitReply
-	ok := call(server, "Server.Init", InitArg{Client: gp.id, View: view}, &reply, false)
-	if ok {
-		err := bytesToDoc(reply.Doc, &gp.doc)
-		if err != nil {
-			log.Fatal("Couldn't decode document")
+	for {
+		ok := call(server, "Server.Init", InitArg{Client: gp.id, View: view}, &reply, false)
+		if ok {
+			if reply.Err == "OK" {
+				err := bytesToDoc(reply.Doc, &gp.doc)
+				if err != nil {
+					log.Fatal("Couldn't decode document")
+				}
+
+				gp.tempdoc = *gp.doc.copy()
+				gp.opNum = 1
+
+				// // update positions
+				for user, pos := range gp.doc.Users {
+					gp.tempRUsers[user] = editorRowCxToRx(&gp.tempdoc.Rows[pos.Y], pos.X)
+				}
+				gp.numusers = len(gp.doc.Users)
+				gp.userColors[gp.id] = gp.numusers
+				break
+			} else {
+				time.Sleep(time.Second)
+			}
+
+			// var c []Op
+			// err = json.Unmarshal(reply.Commits, &c)
+			// if err != nil {
+			// 	log.Fatal("Couldn't decode document")
+			// }
+
+			// gp.opNum = 1
+
+			// if len(c) > 0 {
+			// 	gp.applyCommits(c)
+			// }
+		} else {
+			log.Fatal("Not ok call", false)
 		}
-
-		var c []Op
-		err = json.Unmarshal(reply.Commits, &c)
-		if err != nil {
-			log.Fatal("Couldn't decode document")
-		}
-
-		gp.opNum = 1
-
-		if len(c) > 0 {
-			gp.applyCommits(c)
-		}
-
-		gp.tempdoc = *gp.doc.copy()
-
-		// update positions
-		for user, pos := range gp.doc.Users {
-			x := *pos
-			gp.tempdoc.Users[user] = &x
-			gp.tempRUsers[user] = editorRowCxToRx(&gp.tempdoc.Rows[pos.Y], pos.X)
-		}
-	} else {
-		log.Fatal("Not ok call", false)
 	}
 }
 

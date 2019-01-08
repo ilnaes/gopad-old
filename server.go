@@ -13,17 +13,22 @@ import (
 	"time"
 )
 
+type UserData struct {
+	doc *Doc
+}
+
 type Server struct {
-	listener    net.Listener
-	commitLog   []Op
-	doc         Doc
-	view        uint32
-	px          Paxos
-	mu          sync.Mutex
-	userSeqs    map[uint32]uint32 // last sequence number by user
-	userViews   map[uint32]uint32 // last reported view number by user
-	numusers    int
-	commitpoint uint32
+	listener     net.Listener
+	commitLog    []Op
+	doc          Doc
+	px           Paxos
+	mu           sync.Mutex
+	userSeqs     map[uint32]uint32 // last sequence number by user
+	userViews    map[uint32]int    // last reported view number by user
+	numusers     int
+	commitpoint  int
+	discardpoint int
+	userData     map[uint32]*UserData
 
 	// handler  map[string]HandleFunc
 	// m sync.RWMutex
@@ -44,8 +49,9 @@ func NewServer() *Server {
 	e := Server{
 		doc:       doc,
 		userSeqs:  make(map[uint32]uint32),
-		userViews: make(map[uint32]uint32),
+		userViews: make(map[uint32]int),
 		commitLog: make([]Op, 0),
+		userData:  make(map[uint32]*UserData),
 	}
 	scanner := bufio.NewScanner(file)
 	for scanner.Scan() {
@@ -61,14 +67,15 @@ func NewServer() *Server {
 }
 
 func (s *Server) handleOp(ops []Op) {
-	log.Println("Got", len(ops), "ops")
 	s.mu.Lock()
 	for _, c := range ops {
-		log.Println(c)
 		s.commitLog = append(s.commitLog, c)
-		s.view++
+		s.commitpoint++
 		if c.Seq == s.userSeqs[c.Client]+1 {
 			s.userSeqs[c.Client]++
+		}
+		if s.userViews[c.Client] < c.View {
+			s.userViews[c.Client] = c.View
 		}
 	}
 	s.mu.Unlock()
@@ -82,30 +89,22 @@ func (s *Server) Init(arg InitArg, reply *InitReply) error {
 		return nil
 	}
 
-	s.commitLog = append(s.commitLog, Op{Type: Init, Client: arg.Client, Seq: 1})
-	s.view++
+	if s.userData[arg.Client] == nil {
+		go s.handleOp([]Op{Op{Type: Init, Client: arg.Client, Seq: 1}})
+		reply.Err = "Redo"
+	} else {
+		// marshal document and send back
+		buf, err := docToBytes(s.userData[arg.Client].doc)
+		if err != nil {
+			log.Println("Couldn't send document", err)
+			reply.Err = "Encode"
+			return nil
+		}
+		reply.Doc = buf
+		reply.Err = "OK"
 
-	s.userSeqs[arg.Client] = 1
-
-	// marshal document and send back
-	buf, err := docToBytes(&s.doc)
-	if err != nil {
-		log.Println("Couldn't send document", err)
-		reply.Err = "Encode"
-		return nil
+		s.numusers++
 	}
-	reply.Doc = buf
-
-	buf, err = json.Marshal(s.commitLog)
-	if err != nil {
-		log.Println("Couldn't send log", err)
-		reply.Err = "Encode"
-		return nil
-	}
-	reply.Commits = buf
-	reply.Err = "OK"
-
-	s.numusers++
 
 	return nil
 }
@@ -113,10 +112,15 @@ func (s *Server) Init(arg InitArg, reply *InitReply) error {
 func (s *Server) Query(arg QueryArg, reply *QueryReply) error {
 	idx := arg.View
 
+	// log.Println(idx, "----", s.discardpoint, s.commitpoint)
 	// log.Println("Sending query...", s.view-idx)
+	if idx > s.commitpoint {
+		reply.Err = "BAD"
+		return nil
+	}
 
 	s.mu.Lock()
-	buf, err := json.Marshal(s.commitLog[idx:s.view])
+	buf, err := json.Marshal(s.commitLog[idx-s.discardpoint : s.commitpoint-s.discardpoint])
 	s.mu.Unlock()
 
 	if err != nil {
@@ -140,7 +144,7 @@ func (s *Server) Handle(arg OpArg, reply *OpReply) error {
 	}
 
 	if len(ops) > 0 {
-		if ops[0].Seq > s.userSeqs[ops[0].Client]+1 {
+		if ops[0].Seq > s.doc.Seqs[ops[0].Client]+1 {
 			// sequence number larger than expected
 			reply.Err = "High"
 			return nil
@@ -162,7 +166,8 @@ func (s *Server) Handle(arg OpArg, reply *OpReply) error {
 			}
 		}
 
-		if ops[len(ops)-1].Seq > s.userSeqs[ops[0].Client] {
+		if ops[len(ops)-1].Seq > s.doc.Seqs[ops[0].Client] {
+			// there is a new op
 			go s.handleOp(ops)
 		}
 	}
@@ -176,8 +181,52 @@ func (s *Server) update() {
 	for true {
 		s.mu.Lock()
 
+		if s.doc.View < s.commitpoint {
+			for _, c := range s.commitLog[s.doc.View-s.discardpoint : s.commitpoint-s.discardpoint] {
+				if c.Seq == s.doc.Seqs[c.Client]+1 {
+					s.doc.apply(c, false)
+					s.doc.Seqs[c.Client]++
+
+					// TODO: handle Inits
+					if c.Type == Init && s.userData[c.Client] == nil {
+						s.userData[c.Client] = &UserData{doc: s.doc.copy()}
+						s.userData[c.Client].doc.View++
+						s.userViews[c.Client] = s.userData[c.Client].doc.View // correct?
+					}
+
+					if c.Type == Save {
+						f, err := os.Create("tmp1")
+						if err != nil {
+							log.Fatal(err)
+						}
+
+						for _, r := range s.doc.Rows {
+							f.WriteString(r.Chars + string('\n'))
+						}
+						f.Sync()
+						f.Close()
+						os.Rename("tmp1", "tmp")
+					}
+				}
+				s.doc.View++
+			}
+
+			min := 0
+			for _, v := range s.userViews {
+				if min == 0 {
+					min = v
+				} else if min > v {
+					min = v
+				}
+			}
+			if s.discardpoint < min {
+				s.commitLog = s.commitLog[min-s.discardpoint:]
+				s.discardpoint = min
+			}
+		}
+
 		s.mu.Unlock()
-		time.Sleep(time.Second)
+		time.Sleep(250 * time.Millisecond)
 	}
 }
 
