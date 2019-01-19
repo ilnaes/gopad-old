@@ -24,7 +24,7 @@ const (
 
 type gopad struct {
 	srv        string
-	id         uint32
+	id         int
 	screenrows int
 	screencols int
 	rowoff     int
@@ -37,21 +37,22 @@ type gopad struct {
 	selfOps []Op
 	opNum   uint32
 
-	tempRUsers map[uint32]int // renderX for each tempPos
-	userColors map[uint32]int
+	tempRUsers map[int]int // renderX for each tempPos
+	userColors map[int]int
 	numusers   int
 }
 
-func StartClient(server string) {
+func StartClient(user int, server string) {
 	var gp gopad
-	gp.id = rand.Uint32()
+	gp.id = user
 	gp.srv = server + Port
-	gp.tempRUsers = make(map[uint32]int)
-	gp.userColors = make(map[uint32]int)
+	gp.tempRUsers = make(map[int]int)
+	gp.userColors = make(map[int]int)
 
 	gp.userColors[gp.id] = 0
+	fmt.Println(server + Port)
 
-	gp.editorOpen(server+Port, 0)
+	gp.editorOpen(server+Port, 0, user)
 	gp.status = fmt.Sprintf("%d", gp.doc.View)
 
 	// 	if len(gp.doc.Users) > 1 {
@@ -91,7 +92,7 @@ mainloop:
 			case termbox.KeyCtrlC:
 				break mainloop
 			case termbox.KeyCtrlS:
-				gp.logOp([]Op{Op{Type: Save, View: gp.doc.View, Client: gp.id}})
+				// gp.logOp([]Op{Op{Type: Save, View: gp.doc.View, Client: gp.id}})
 			case termbox.KeyArrowLeft,
 				termbox.KeyArrowRight,
 				termbox.KeyArrowUp,
@@ -215,9 +216,9 @@ func (gp *gopad) pull() {
 					}
 
 					gp.tempdoc = *gp.doc.copy()
-					for k, v := range gp.doc.Users {
+					for k, v := range gp.doc.UserPos {
 						x := *v
-						gp.tempdoc.Users[k] = &x
+						gp.tempdoc.UserPos[k] = &x
 					}
 					// apply ops not yet commited
 					for _, op := range gp.selfOps {
@@ -244,7 +245,7 @@ func (gp *gopad) applyCommits(commits []Op) {
 			gp.doc.apply(op, false)
 			gp.doc.Seqs[op.Client]++
 
-			if op.Type == Init {
+			if op.Type == Init && gp.doc.Seqs[op.Client] == 0 {
 				gp.numusers++
 				gp.userColors[op.Client] = gp.numusers
 			}
@@ -257,14 +258,14 @@ func (gp *gopad) applyCommits(commits []Op) {
 
 func (gp *gopad) editorScroll() {
 
-	for id, pos := range gp.tempdoc.Users {
+	for id, pos := range gp.tempdoc.UserPos {
 		gp.tempRUsers[id] = 0
 		if pos.Y < len(gp.doc.Rows) {
 			gp.tempRUsers[id] = editorRowCxToRx(&gp.tempdoc.Rows[pos.Y], pos.X)
 		}
 	}
 
-	pos := gp.tempdoc.Users[gp.id]
+	pos := gp.tempdoc.UserPos[gp.id]
 	// reposition up
 
 	if pos.Y < gp.rowoff {
@@ -305,7 +306,7 @@ func (gp *gopad) drawRows() {
 						bg := termbox.ColorDefault
 
 						// draw other cursors
-						for user, pos := range gp.tempdoc.Users {
+						for user, pos := range gp.tempdoc.UserPos {
 							if user != gp.id {
 								if gp.tempRUsers[user] == k && pos.Y == filerow {
 									bg = CURSORS[gp.userColors[user]]
@@ -320,7 +321,7 @@ func (gp *gopad) drawRows() {
 
 							// select color based on author
 							auth := row.Author[k]
-							color := COLORS[gp.userColors[auth]]
+							color := COLORS[gp.doc.Colors[auth]]
 							termbox.SetCell(k+1-gp.coloff, i, s, color, bg)
 						}
 						if k+1 > gp.screencols {
@@ -334,7 +335,7 @@ func (gp *gopad) drawRows() {
 
 				// at endpoint?
 				if endR >= gp.coloff && endR < gp.coloff+gp.screencols {
-					for user, pos := range gp.tempdoc.Users {
+					for user, pos := range gp.tempdoc.UserPos {
 						if user != gp.id {
 							if pos.X == end && pos.Y == filerow {
 								termbox.SetCell(endR-gp.coloff+1, i, ' ', 0, CURSORS[gp.userColors[user]])
@@ -344,7 +345,7 @@ func (gp *gopad) drawRows() {
 				}
 			} else if gp.coloff == 0 {
 				// draw cursor on empty line
-				for user, pos := range gp.tempdoc.Users {
+				for user, pos := range gp.tempdoc.UserPos {
 					if user != gp.id {
 						if pos.Y == filerow {
 							termbox.SetCell(1, i, ' ', 0, CURSORS[gp.userColors[user]])
@@ -389,7 +390,7 @@ func (gp *gopad) refreshScreen() {
 	gp.drawRows()
 	gp.editorDrawStatusBar()
 
-	termbox.SetCursor(gp.tempRUsers[gp.id]-gp.coloff+1, gp.tempdoc.Users[gp.id].Y-gp.rowoff)
+	termbox.SetCursor(gp.tempRUsers[gp.id]-gp.coloff+1, gp.tempdoc.UserPos[gp.id].Y-gp.rowoff)
 	termbox.Flush()
 	gp.mu.Unlock()
 }
@@ -397,25 +398,27 @@ func (gp *gopad) refreshScreen() {
 /*** file i/o ***/
 
 // get file from server
-func (gp *gopad) editorOpen(server string, view int) {
+func (gp *gopad) editorOpen(server string, view int, user int) {
 	var reply InitReply
+	xid := rand.Uint32()
 	for {
-		ok := call(server, "Server.Init", InitArg{Client: gp.id, View: view}, &reply, false)
+		ok := call(server, "Server.Init", InitArg{Client: user, Xid: xid}, &reply, false)
 		if ok {
 			if reply.Err == "OK" {
+				// TODO: update for reconnection
 				err := bytesToDoc(reply.Doc, &gp.doc)
 				if err != nil {
 					log.Fatal("Couldn't decode document")
 				}
 
 				gp.tempdoc = *gp.doc.copy()
-				gp.opNum = 1
+				gp.opNum = gp.doc.Seqs[user]
 
 				// // update positions
-				for user, pos := range gp.doc.Users {
+				for user, pos := range gp.doc.UserPos {
 					gp.tempRUsers[user] = editorRowCxToRx(&gp.tempdoc.Rows[pos.Y], pos.X)
 				}
-				gp.numusers = len(gp.doc.Users)
+				gp.numusers = len(gp.doc.UserPos)
 				gp.userColors[gp.id] = gp.numusers
 				break
 			} else {
@@ -434,7 +437,7 @@ func (gp *gopad) editorOpen(server string, view int) {
 			// 	gp.applyCommits(c)
 			// }
 		} else {
-			log.Fatal("Not ok call", false)
+			log.Fatal("Not ok call")
 		}
 	}
 }
@@ -459,7 +462,7 @@ func (row *erow) renderRow() *erow {
 	l := len(row.Chars) + tabs*(TABSTOP-1) + 1
 
 	newrow.Temp = make([]bool, l)
-	newrow.Author = make([]uint32, l)
+	newrow.Author = make([]int, l)
 
 	var sb strings.Builder
 	x := 0

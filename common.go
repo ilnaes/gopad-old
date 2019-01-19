@@ -24,7 +24,6 @@ const (
 	Newline
 	Init
 	Move
-	Save
 )
 
 type Err string
@@ -32,7 +31,7 @@ type Err string
 type erow struct {
 	Chars  string
 	Temp   []bool // really shouldn't be here but whatever
-	Author []uint32
+	Author []int
 }
 
 type Pos struct {
@@ -40,20 +39,24 @@ type Pos struct {
 }
 
 type Doc struct {
-	Rows  []erow
-	View  int
-	Users map[uint32]*Pos // position of users in document
-	Seqs  map[uint32]uint32
-	Id    uint32
+	Rows    []erow
+	View    uint32
+	Colors  map[int]int
+	Users   []string     // starting username (not implemented)
+	UserPos map[int]*Pos // position of users in document
+	Seqs    map[int]uint32
+	Id      uint32
 }
 
 // transport version of doc
 type Doc_t struct {
-	Rows  []erow
-	View  int
-	Users map[uint32]Pos // position of users in document
-	Seqs  map[uint32]uint32
-	Id    uint32
+	Users   []string
+	Rows    []erow
+	View    uint32
+	Colors  map[int]int
+	UserPos map[int]Pos // position of users in document
+	Seqs    map[int]uint32
+	Id      uint32
 }
 
 type Op struct {
@@ -61,19 +64,19 @@ type Op struct {
 	Data rune
 	Move termbox.Key
 	// X, Y   int
-	View   int    // last document view seen by user
+	View   uint32 // last document view seen by user
 	Seq    uint32 // sequential number for each user
-	Client uint32
+	Client int
 }
 
 type InitArg struct {
-	Client uint32
-	View   int
+	Client int
+	Xid    uint32
 }
 
 type QueryArg struct {
-	View   int
-	Client uint32
+	View   uint32
+	Client int
 }
 
 type OpArg struct {
@@ -122,7 +125,7 @@ func call(srv string, rpcname string, args interface{}, reply interface{}, verbo
 func (row *erow) copy() *erow {
 	t := make([]bool, len(row.Temp))
 	copy(t, row.Temp)
-	a := make([]uint32, len(row.Author))
+	a := make([]int, len(row.Author))
 	copy(a, row.Author)
 
 	return &erow{
@@ -140,16 +143,24 @@ func (doc *Doc) copy() *Doc {
 		d.Rows[i] = *doc.Rows[i].copy()
 	}
 
-	d.Seqs = make(map[uint32]uint32, len(doc.Seqs))
+	d.Seqs = make(map[int]uint32)
+	d.Users = make([]string, len(doc.Users))
+	d.Colors = make(map[int]int)
+
+	copy(d.Users, doc.Users)
+
+	for k, v := range doc.Colors {
+		d.Colors[k] = v
+	}
 
 	for k, v := range doc.Seqs {
 		d.Seqs[k] = v
 	}
 
-	d.Users = make(map[uint32]*Pos)
-	for k, v := range doc.Users {
+	d.UserPos = make(map[int]*Pos)
+	for k, v := range doc.UserPos {
 		pos := *v
-		d.Users[k] = &pos
+		d.UserPos[k] = &pos
 	}
 	return &d
 }
@@ -163,11 +174,19 @@ func docToBytes(doc *Doc) ([]byte, error) {
 	}
 
 	// need to dereference map targets to send
-	d.Users = make(map[uint32]Pos)
-	for k, v := range doc.Users {
-		d.Users[k] = *v
+	d.UserPos = make(map[int]Pos)
+	for k, v := range doc.UserPos {
+		d.UserPos[k] = *v
 	}
-	d.Seqs = make(map[uint32]uint32)
+	d.Seqs = make(map[int]uint32)
+	d.Users = make([]string, len(doc.Users))
+	d.Colors = make(map[int]int)
+
+	copy(d.Users, doc.Users)
+
+	for k, v := range doc.Colors {
+		d.Colors[k] = v
+	}
 
 	for k, v := range doc.Seqs {
 		d.Seqs[k] = v
@@ -204,10 +223,18 @@ func bytesToDoc(b []byte, d *Doc) error {
 	}
 
 	d.Seqs = doc.Seqs
-	d.Users = make(map[uint32]*Pos)
-	for k, v := range doc.Users {
+	d.Users = doc.Users
+
+	d.UserPos = make(map[int]*Pos)
+	d.Colors = make(map[int]int)
+
+	for k, v := range doc.Colors {
+		d.Colors[k] = v
+	}
+
+	for k, v := range doc.UserPos {
 		x := v
-		d.Users[k] = &x
+		d.UserPos[k] = &x
 	}
 
 	return err
@@ -219,8 +246,10 @@ func (doc *Doc) apply(op Op, temp bool) {
 	case Insert:
 		editorInsertRune(doc, op.Client, op.Data, temp)
 	case Init:
-		doc.Users[op.Client] = &Pos{}
-		// }
+		if doc.Seqs[op.Client] == 0 {
+			doc.Colors[op.Client] = len(doc.Colors) + 1
+		}
+		doc.UserPos[op.Client] = &Pos{}
 	case Move:
 		editorMoveCursor(doc, op.Client, op.Move)
 	case Delete:
@@ -234,8 +263,8 @@ func (doc *Doc) apply(op Op, temp bool) {
 
 /*** input ***/
 
-func editorMoveCursor(doc *Doc, id uint32, key termbox.Key) {
-	pos := doc.Users[id]
+func editorMoveCursor(doc *Doc, id int, key termbox.Key) {
+	pos := doc.UserPos[id]
 	var row *erow
 	if pos.Y < len(doc.Rows) {
 		row = &doc.Rows[pos.Y]
@@ -296,16 +325,16 @@ func editorMoveCursor(doc *Doc, id uint32, key termbox.Key) {
 
 /*** editor operations ***/
 
-func editorInsertRune(doc *Doc, id uint32, key rune, temp bool) {
-	pos := doc.Users[id]
+func editorInsertRune(doc *Doc, id int, key rune, temp bool) {
+	pos := doc.UserPos[id]
 
 	if pos.Y == len(doc.Rows) {
-		doc.insertRow(pos.Y, "", []bool{}, []uint32{})
+		doc.insertRow(pos.Y, "", []bool{}, []int{})
 	}
 
 	doc.rowInsertRune(pos.X, pos.Y, key, id, temp)
 
-	for k, npos := range doc.Users {
+	for k, npos := range doc.UserPos {
 		// update other positions
 		if k != id {
 			if pos.Y == npos.Y && pos.X <= npos.X {
@@ -317,15 +346,15 @@ func editorInsertRune(doc *Doc, id uint32, key rune, temp bool) {
 	pos.X++
 }
 
-func editorInsertNewLine(doc *Doc, id uint32) {
-	pos := doc.Users[id]
+func editorInsertNewLine(doc *Doc, id int) {
+	pos := doc.UserPos[id]
 
 	if pos.X == 0 {
-		doc.insertRow(pos.Y, "", []bool{}, []uint32{})
+		doc.insertRow(pos.Y, "", []bool{}, []int{})
 	} else {
 		row := &doc.Rows[pos.Y]
 		t := make([]bool, len(row.Temp)-pos.X)
-		a := make([]uint32, len(row.Temp)-pos.X)
+		a := make([]int, len(row.Temp)-pos.X)
 		copy(t, row.Temp[pos.X:])
 		copy(a, row.Author[pos.X:])
 		doc.insertRow(pos.Y+1, row.Chars[pos.X:], t, a)
@@ -334,7 +363,7 @@ func editorInsertNewLine(doc *Doc, id uint32) {
 		doc.Rows[pos.Y].Author = row.Author[:pos.X]
 	}
 
-	for k, npos := range doc.Users {
+	for k, npos := range doc.UserPos {
 		// update other positions
 		if k != id {
 			if pos.Y == npos.Y && pos.X <= npos.X {
@@ -350,8 +379,8 @@ func editorInsertNewLine(doc *Doc, id uint32) {
 	pos.X = 0
 }
 
-func editorDelRune(doc *Doc, id uint32) {
-	pos := doc.Users[id]
+func editorDelRune(doc *Doc, id int) {
+	pos := doc.UserPos[id]
 	if pos.Y == len(doc.Rows) {
 		return
 	}
@@ -362,7 +391,7 @@ func editorDelRune(doc *Doc, id uint32) {
 	if pos.X > 0 {
 		doc.rowDelRune(pos.X, pos.Y)
 
-		for k, npos := range doc.Users {
+		for k, npos := range doc.UserPos {
 			// update other positions
 			if k != id {
 				if pos.Y == npos.Y && pos.X <= npos.X {
@@ -375,7 +404,7 @@ func editorDelRune(doc *Doc, id uint32) {
 		oldOffset := len(doc.Rows[pos.Y-1].Chars)
 		doc.editorDelRow(pos.Y)
 
-		for k, npos := range doc.Users {
+		for k, npos := range doc.UserPos {
 			// update other positions
 			if k != id {
 				if pos.Y == npos.Y {
@@ -395,7 +424,7 @@ func editorDelRune(doc *Doc, id uint32) {
 
 /*** row operations ***/
 
-func (doc *Doc) insertRow(at int, ch string, temp []bool, auth []uint32) {
+func (doc *Doc) insertRow(at int, ch string, temp []bool, auth []int) {
 	// doc.Rows = append(doc.Rows, erow{Chars: s})
 	doc.Rows = append(doc.Rows, erow{})
 	copy(doc.Rows[at+1:], doc.Rows[at:])
@@ -403,7 +432,7 @@ func (doc *Doc) insertRow(at int, ch string, temp []bool, auth []uint32) {
 }
 
 // insert rune into row[aty] at position atx
-func (doc *Doc) rowInsertRune(atx, aty int, key rune, id uint32, temp bool) {
+func (doc *Doc) rowInsertRune(atx, aty int, key rune, id int, temp bool) {
 	row := &doc.Rows[aty]
 
 	if atx < 0 || atx > len(row.Chars) {

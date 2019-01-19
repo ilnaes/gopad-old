@@ -1,6 +1,7 @@
 package main
 
 import (
+	"flag"
 	"math/rand"
 	"os"
 	"time"
@@ -13,6 +14,9 @@ func main() {
 		s := NewServer()
 		s.start()
 	} else {
-		StartClient(os.Args[1])
+		user := flag.Int("u", 1, "userid")
+		server := flag.String("s", "localhost", "server address")
+		flag.Parse()
+		StartClient(*user, *server)
 	}
 }
