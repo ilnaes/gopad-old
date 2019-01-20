@@ -450,7 +450,7 @@ func (doc *Doc) rowInsertRune(atx, aty int, key rune, id int, temp bool) {
 
 	row.Author = append(row.Author, 0)
 	copy(row.Author[atx+1:], row.Author[atx:])
-	row.Author[atx] = id
+	row.Author[atx] = doc.Colors[id]
 
 }
 

@@ -38,7 +38,6 @@ type gopad struct {
 	opNum   uint32
 
 	tempRUsers map[int]int // renderX for each tempPos
-	userColors map[int]int
 	numusers   int
 }
 
@@ -47,9 +46,7 @@ func StartClient(user int, server string) {
 	gp.id = user
 	gp.srv = server + Port
 	gp.tempRUsers = make(map[int]int)
-	gp.userColors = make(map[int]int)
 
-	gp.userColors[gp.id] = 0
 	fmt.Println(server + Port)
 
 	gp.editorOpen(server+Port, 0, user)
@@ -247,7 +244,6 @@ func (gp *gopad) applyCommits(commits []Op) {
 
 			if op.Type == Init && gp.doc.Seqs[op.Client] == 0 {
 				gp.numusers++
-				gp.userColors[op.Client] = gp.numusers
 			}
 		}
 		gp.doc.View++
@@ -309,7 +305,7 @@ func (gp *gopad) drawRows() {
 						for user, pos := range gp.tempdoc.UserPos {
 							if user != gp.id {
 								if gp.tempRUsers[user] == k && pos.Y == filerow {
-									bg = CURSORS[gp.userColors[user]]
+									bg = CURSORS[gp.doc.Colors[user]]
 								}
 							}
 						}
@@ -321,7 +317,7 @@ func (gp *gopad) drawRows() {
 
 							// select color based on author
 							auth := row.Author[k]
-							color := COLORS[gp.doc.Colors[auth]]
+							color := COLORS[auth]
 							termbox.SetCell(k+1-gp.coloff, i, s, color, bg)
 						}
 						if k+1 > gp.screencols {
@@ -338,7 +334,7 @@ func (gp *gopad) drawRows() {
 					for user, pos := range gp.tempdoc.UserPos {
 						if user != gp.id {
 							if pos.X == end && pos.Y == filerow {
-								termbox.SetCell(endR-gp.coloff+1, i, ' ', 0, CURSORS[gp.userColors[user]])
+								termbox.SetCell(endR-gp.coloff+1, i, ' ', 0, CURSORS[gp.doc.Colors[user]])
 							}
 						}
 					}
@@ -348,7 +344,7 @@ func (gp *gopad) drawRows() {
 				for user, pos := range gp.tempdoc.UserPos {
 					if user != gp.id {
 						if pos.Y == filerow {
-							termbox.SetCell(1, i, ' ', 0, CURSORS[gp.userColors[user]])
+							termbox.SetCell(1, i, ' ', 0, CURSORS[gp.doc.Colors[user]])
 						}
 					}
 				}
@@ -364,8 +360,8 @@ func (gp *gopad) editorDrawStatusBar() {
 
 	bg := termbox.ColorWhite
 
-	if gp.userColors[gp.id] != 0 {
-		bg = COLORS[gp.userColors[gp.id]]
+	if gp.doc.Colors[gp.id] != 0 {
+		bg = COLORS[gp.doc.Colors[gp.id]]
 	}
 	var j int
 
@@ -419,7 +415,6 @@ func (gp *gopad) editorOpen(server string, view int, user int) {
 					gp.tempRUsers[user] = editorRowCxToRx(&gp.tempdoc.Rows[pos.Y], pos.X)
 				}
 				gp.numusers = len(gp.doc.UserPos)
-				gp.userColors[gp.id] = gp.numusers
 				break
 			} else {
 				time.Sleep(time.Second)
