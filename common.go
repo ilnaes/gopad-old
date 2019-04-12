@@ -6,6 +6,7 @@ import (
 	"github.com/nsf/termbox-go"
 	"log"
 	"net/rpc"
+	"os"
 )
 
 var COLORS = []termbox.Attribute{16, 10, 11, 15, 0}
@@ -133,6 +134,21 @@ func (row *erow) copy() *erow {
 		Temp:   t,
 		Author: a,
 	}
+}
+
+// write doc
+func (doc *Doc) write(filename string) bool {
+	f, err := os.OpenFile(filename, os.O_RDWR|os.O_CREATE, 0666)
+
+	if err != nil {
+		return false
+	}
+
+	for _, row := range doc.Rows {
+		f.WriteString(row.Chars + string("\n"))
+	}
+	f.Close()
+	return true
 }
 
 // copies doc

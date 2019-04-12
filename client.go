@@ -9,6 +9,7 @@ import (
 	"github.com/nsf/termbox-go"
 	"log"
 	"math/rand"
+	// "os"
 	// "net/rpc"
 	"strings"
 	"sync"
@@ -23,6 +24,7 @@ const (
 )
 
 type gopad struct {
+	filename   string
 	srv        string
 	id         int
 	screenrows int
@@ -89,7 +91,19 @@ mainloop:
 			case termbox.KeyCtrlC:
 				break mainloop
 			case termbox.KeyCtrlS:
-				// gp.logOp([]Op{Op{Type: Save, View: gp.doc.View, Client: gp.id}})
+				if gp.filename == "" {
+					file, ok := gp.editorPrompt("Save as (ESC to cancel): ")
+					if ok {
+						gp.filename = file
+					} else {
+						gp.status = ""
+						break
+					}
+				}
+
+				if gp.tempdoc.write(gp.filename) {
+					gp.status = "Saved!"
+				}
 			case termbox.KeyArrowLeft,
 				termbox.KeyArrowRight,
 				termbox.KeyArrowUp,
@@ -247,6 +261,35 @@ func (gp *gopad) applyCommits(commits []Op) {
 			}
 		}
 		gp.doc.View++
+	}
+}
+
+func (gp *gopad) editorPrompt(msg string) (string, bool) {
+	gp.status = msg
+	file := ""
+
+	for {
+		gp.refreshScreen()
+
+		switch ev := termbox.PollEvent(); ev.Type {
+		case termbox.EventKey:
+			switch ev.Key {
+			case termbox.KeyBackspace, termbox.KeyBackspace2:
+				file = file[:len(file)-1]
+				gp.status = msg + file
+			case termbox.KeyEsc:
+				return "", false
+			case termbox.KeyEnter:
+				return file, true
+			default:
+				if ev.Ch != 0 {
+					file += string(ev.Ch)
+					gp.status = msg + file
+				}
+			}
+		case termbox.EventError:
+			panic(ev.Err)
+		}
 	}
 }
 
