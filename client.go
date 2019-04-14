@@ -54,21 +54,6 @@ func StartClient(user int, server string) {
 	gp.editorOpen(server+Port, 0, user)
 	gp.status = fmt.Sprintf("%d", gp.doc.View)
 
-	// 	if len(gp.doc.Users) > 1 {
-	// 		f, err := os.Create("tmp1")
-	// 		if err != nil {
-	// 			log.Fatal(err)
-	// 		}
-
-	// 		for _, r := range gp.doc.Rows {
-	// 			f.WriteString(r.Chars + string('\n'))
-	// 		}
-	// 		f.Sync()
-	// 		f.Close()
-	// 		os.Rename("tmp1", "tmp")
-
-	// 	}
-
 	err := termbox.Init()
 	if err != nil {
 		panic(err)
@@ -87,12 +72,13 @@ mainloop:
 	for {
 		switch ev := termbox.PollEvent(); ev.Type {
 		case termbox.EventKey:
+			gp.mu.Lock()
 			switch ev.Key {
 			case termbox.KeyCtrlC:
 				break mainloop
 			case termbox.KeyCtrlS:
 				if gp.filename == "" {
-					file, ok := gp.editorPrompt("Save as (ESC to cancel): ")
+					file, ok := gp.editorPrompt("Save as (ESC to cancel): ", gp.filename)
 					if ok {
 						gp.filename = file
 					} else {
@@ -101,9 +87,13 @@ mainloop:
 					}
 				}
 
+				gp.mu.Lock()
 				if gp.tempdoc.write(gp.filename) {
 					gp.status = "Saved!"
+				} else {
+					gp.status = "Error saving!"
 				}
+				gp.mu.Unlock()
 			case termbox.KeyArrowLeft,
 				termbox.KeyArrowRight,
 				termbox.KeyArrowUp,
@@ -150,18 +140,17 @@ mainloop:
 		case termbox.EventError:
 			panic(ev.Err)
 		}
+		gp.mu.Unlock()
 		gp.refreshScreen()
 	}
 }
 
 func (gp *gopad) logOp(ops []Op) {
-	gp.mu.Lock()
 	for _, op := range ops {
 		gp.opNum++
 		op.Seq = gp.opNum
 		gp.selfOps = append(gp.selfOps, op)
 	}
-	gp.mu.Unlock()
 }
 
 // push commits to server
@@ -264,9 +253,8 @@ func (gp *gopad) applyCommits(commits []Op) {
 	}
 }
 
-func (gp *gopad) editorPrompt(msg string) (string, bool) {
+func (gp *gopad) editorPrompt(msg, file string) (string, bool) {
 	gp.status = msg
-	file := ""
 
 	for {
 		gp.refreshScreen()
@@ -462,18 +450,6 @@ func (gp *gopad) editorOpen(server string, view int, user int) {
 			} else {
 				time.Sleep(time.Second)
 			}
-
-			// var c []Op
-			// err = json.Unmarshal(reply.Commits, &c)
-			// if err != nil {
-			// 	log.Fatal("Couldn't decode document")
-			// }
-
-			// gp.opNum = 1
-
-			// if len(c) > 0 {
-			// 	gp.applyCommits(c)
-			// }
 		} else {
 			log.Fatal("Not ok call")
 		}
