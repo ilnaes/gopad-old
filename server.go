@@ -39,13 +39,7 @@ type Server struct {
 	// m sync.RWMutex
 }
 
-func NewServer() *Server {
-	file, err := os.Open("test")
-	if err != nil {
-		log.Fatal(err)
-	}
-	defer file.Close()
-
+func NewServer(fname string) *Server {
 	doc := Doc{
 		Id:      rand.Uint32(),
 		Seqs:    make(map[int]uint32),
@@ -59,14 +53,24 @@ func NewServer() *Server {
 		commitLog: make([]Op, 0),
 		userData:  make(map[int]*UserData),
 	}
-	scanner := bufio.NewScanner(file)
-	for scanner.Scan() {
-		e.doc.Rows = append(e.doc.Rows,
-			erow{
-				Chars:  scanner.Text(),
-				Temp:   make([]bool, len(scanner.Text())),
-				Author: make([]int, len(scanner.Text())),
-			})
+
+	if fname != "" {
+		file, err := os.Open(fname)
+		if err != nil {
+			log.Fatal(err)
+		}
+		defer file.Close()
+		scanner := bufio.NewScanner(file)
+		for scanner.Scan() {
+			e.doc.Rows = append(e.doc.Rows,
+				erow{
+					Chars:  scanner.Text(),
+					Temp:   make([]bool, len(scanner.Text())),
+					Author: make([]int, len(scanner.Text())),
+				})
+		}
+	} else {
+		e.doc.Rows = append(e.doc.Rows, erow{Chars: "", Temp: make([]bool, 0), Author: make([]int, 0)})
 	}
 
 	return &e
@@ -121,6 +125,7 @@ func (s *Server) Init(arg InitArg, reply *InitReply) error {
 	return nil
 }
 
+// get committed but not discarded ops
 func (s *Server) Query(arg QueryArg, reply *QueryReply) error {
 	idx := arg.View
 
@@ -211,20 +216,6 @@ func (s *Server) update() {
 							s.userViews[c.Client] = s.userData[c.Client].doc.View // correct?
 						}
 					}
-
-					// if c.Type == Save {
-					// 	f, err := os.Create("tmp1")
-					// 	if err != nil {
-					// 		log.Fatal(err)
-					// 	}
-
-					// 	for _, r := range s.doc.Rows {
-					// 		f.WriteString(r.Chars + string('\n'))
-					// 	}
-					// 	f.Sync()
-					// 	f.Close()
-					// 	os.Rename("tmp1", "tmp")
-					// }
 				}
 				s.doc.View++
 			}
