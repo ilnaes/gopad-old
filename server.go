@@ -74,7 +74,6 @@ func NewServer() *Server {
 
 func (s *Server) handleOp(ops []Op) {
 	s.mu.Lock()
-
 	for _, c := range ops {
 		s.commitLog = append(s.commitLog, c)
 		s.commitpoint++
@@ -212,6 +211,20 @@ func (s *Server) update() {
 							s.userViews[c.Client] = s.userData[c.Client].doc.View // correct?
 						}
 					}
+
+					// if c.Type == Save {
+					// 	f, err := os.Create("tmp1")
+					// 	if err != nil {
+					// 		log.Fatal(err)
+					// 	}
+
+					// 	for _, r := range s.doc.Rows {
+					// 		f.WriteString(r.Chars + string('\n'))
+					// 	}
+					// 	f.Sync()
+					// 	f.Close()
+					// 	os.Rename("tmp1", "tmp")
+					// }
 				}
 				s.doc.View++
 			}

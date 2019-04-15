@@ -145,8 +145,7 @@ func (doc *Doc) write(filename string) bool {
 	}
 
 	for _, row := range doc.Rows {
-		f.WriteString(row.Chars)
-		f.WriteString(string("\n"))
+		f.WriteString(row.Chars + string("\n"))
 	}
 	f.Close()
 	return true
