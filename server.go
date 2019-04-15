@@ -96,10 +96,15 @@ func (s *Server) Init(arg InitArg, reply *InitReply) error {
 		return nil
 	}
 
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
 	if s.userData[arg.Client] == nil {
+		// new user
 		go s.handleOp([]Op{Op{Type: Init, View: arg.Xid, Client: arg.Client, Seq: 1}})
 		reply.Err = "Redo"
 	} else if s.userData[arg.Client].xid != arg.Xid {
+		// old user new session
 		go s.handleOp([]Op{Op{Type: Init, View: arg.Xid, Client: arg.Client, Seq: s.userSeqs[arg.Client] + 1}})
 		reply.Err = "Redo"
 	} else {
@@ -154,6 +159,8 @@ func (s *Server) Handle(arg OpArg, reply *OpReply) error {
 	}
 
 	if len(ops) > 0 {
+		s.mu.Lock()
+		defer s.mu.Unlock()
 		if ops[0].Seq > s.doc.Seqs[ops[0].Client]+1 {
 			// sequence number larger than expected
 			reply.Err = "High"

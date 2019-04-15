@@ -77,8 +77,10 @@ mainloop:
 			case termbox.KeyCtrlC:
 				break mainloop
 			case termbox.KeyCtrlS:
+				gp.mu.Unlock()
 				if gp.filename == "" {
 					file, ok := gp.editorPrompt("Save as (ESC to cancel): ", gp.filename)
+					gp.mu.Lock()
 					if ok {
 						gp.filename = file
 					} else {
@@ -87,13 +89,11 @@ mainloop:
 					}
 				}
 
-				gp.mu.Lock()
 				if gp.tempdoc.write(gp.filename) {
 					gp.status = "Saved!"
 				} else {
 					gp.status = "Error saving!"
 				}
-				gp.mu.Unlock()
 			case termbox.KeyArrowLeft,
 				termbox.KeyArrowRight,
 				termbox.KeyArrowUp,
