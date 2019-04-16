@@ -11,6 +11,7 @@ import (
 	"math/rand"
 	// "os"
 	// "net/rpc"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -43,15 +44,15 @@ type gopad struct {
 	numusers   int
 }
 
-func StartClient(user int, server string) {
+func StartClient(user int, server string, port int) {
 	var gp gopad
 	gp.id = user
-	gp.srv = server + Port
+	gp.srv = server + ":" + strconv.Itoa(port)
 	gp.tempRUsers = make(map[int]int)
 
-	fmt.Println(server + Port)
+	fmt.Println(gp.srv)
 
-	gp.editorOpen(server+Port, 0, user)
+	gp.editorOpen(gp.srv, 0, user)
 	gp.status = fmt.Sprintf("%d", gp.doc.View)
 
 	err := termbox.Init()

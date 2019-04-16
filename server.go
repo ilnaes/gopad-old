@@ -9,6 +9,8 @@ import (
 	"net"
 	"net/rpc"
 	"os"
+	"strconv"
+	"strings"
 	"sync"
 	"time"
 )
@@ -26,7 +28,7 @@ type Server struct {
 	listener     net.Listener
 	commitLog    []Op
 	doc          Doc
-	px           Paxos
+	px           *Paxos
 	mu           sync.Mutex
 	userSeqs     map[int]uint32 // last reported sequence by user
 	userViews    map[int]uint32 // last reported view number by user
@@ -70,7 +72,13 @@ func NewServer(fname string) *Server {
 				})
 		}
 	} else {
-		e.doc.Rows = append(e.doc.Rows, erow{Chars: "", Temp: make([]bool, 0), Author: make([]int, 0)})
+		// empty first row
+		e.doc.Rows = append(e.doc.Rows,
+			erow{
+				Chars:  "",
+				Temp:   make([]bool, 0),
+				Author: make([]int, 0),
+			})
 	}
 
 	return &e
@@ -243,11 +251,33 @@ func (s *Server) start() {
 	rpcs := rpc.NewServer()
 	rpcs.Register(s)
 
-	var err error
-	s.listener, err = net.Listen("tcp", Port)
-	if err != nil {
-		log.Fatal("Couldn't listen")
+	port := Port
+	servers := make([]string, 0)
+	me := -1
+
+	// hack for easy setup
+	for i := 0; i < 3; i++ {
+		addr := ":" + strconv.Itoa(port)
+		servers = append(servers, addr)
+
+		if me < 0 {
+			var err error
+
+			s.listener, err = net.Listen("tcp", addr)
+			if err != nil {
+				if strings.HasSuffix(err.Error(), ": address already in use") {
+				} else {
+					log.Fatal(err)
+				}
+			} else {
+				me = i
+			}
+		}
+
+		port++
 	}
+
+	s.px = makePaxos(servers, me, rpcs)
 
 	log.Println("Listening on", s.listener.Addr().String())
 

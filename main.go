@@ -13,6 +13,8 @@ func main() {
 	rand.Seed(time.Now().UnixNano())
 	user := flag.Int("u", -1, "userid")
 	server := flag.String("s", "localhost", "server address")
+	port := flag.Int("p", Port, "port")
+
 	flag.Parse()
 	args := flag.Args()
 
@@ -27,7 +29,7 @@ func main() {
 		if *user < 0 {
 			fmt.Println("User id is mandatory!  Use -u flag.")
 		} else {
-			StartClient(*user, *server)
+			StartClient(*user, *server, *port)
 		}
 	}
 }

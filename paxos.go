@@ -29,6 +29,7 @@ import "fmt"
 import "math/rand"
 import "time"
 import "encoding/gob"
+import "net/rpc"
 
 const Debug = true
 
@@ -108,18 +109,6 @@ type DecidedReply struct {
 
 type DoneReply struct {
 	Num int
-}
-
-func (px *Paxos) SetPrint(b bool) {
-	px.printing = b
-}
-
-func (px *Paxos) Lock() {
-	px.mu.Lock()
-}
-
-func (px *Paxos) Unlock() {
-	px.mu.Unlock()
 }
 
 func (px *Paxos) SetSave(dir string) {
@@ -417,7 +406,7 @@ func fateString(f Fate) string {
 // call Status() to find out if/when agreement
 // is reached.
 //
-func (px *Paxos) Start(seq int, v interface{}) {
+func (px *Paxos) start(seq int, v interface{}) {
 	px.mu.Lock()
 	s, ok := px.Stati[seq]
 	// fmt.Printf("STILL GOING! %d %#v\n", seq, v)
@@ -551,7 +540,7 @@ func (px *Paxos) Done(seq int) {
 // should just inspect the local peer state;
 // it should not contact other Paxos peers.
 //
-func (px *Paxos) Status(Seq int) (Fate, interface{}) {
+func (px *Paxos) status(Seq int) (Fate, interface{}) {
 	// Your code here.
 	px.mu.Lock()
 	defer px.mu.Unlock()
@@ -573,7 +562,7 @@ func (px *Paxos) Status(Seq int) (Fate, interface{}) {
 // the ports of all the paxos peers (including this one)
 // are in peers[]. this servers port is peers[me].
 //
-func Make(peers []string, me int) *Paxos {
+func makePaxos(peers []string, me int, rpcs *rpc.Server) *Paxos {
 	px := &Paxos{}
 	px.peers = peers
 	px.me = me
@@ -590,6 +579,8 @@ func Make(peers []string, me int) *Paxos {
 	for i := 0; i < len(peers); i++ {
 		px.DoneSeqs = append(px.DoneSeqs, -1)
 	}
+
+	rpcs.Register(px)
 
 	return px
 }

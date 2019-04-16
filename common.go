@@ -16,7 +16,7 @@ const MAXUSERS = 3
 const TABSTOP = 4
 
 const (
-	Port = ":6060"
+	Port = 6060
 )
 
 const (
