@@ -1,4 +1,4 @@
-package main
+package gopad
 
 //
 // Paxos library, to be included in an application.

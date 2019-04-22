@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"math/rand"
 	// "os"
+	"github.com/ilnaes/gopad/src"
 	"time"
 	// "sync"
 )
@@ -13,7 +14,7 @@ func main() {
 	rand.Seed(time.Now().UnixNano())
 	user := flag.Int("u", -1, "userid")
 	server := flag.String("s", "localhost", "server address")
-	port := flag.Int("p", Port, "port")
+	port := flag.Int("p", gopad.Port, "port")
 
 	flag.Parse()
 	args := flag.Args()
@@ -23,13 +24,13 @@ func main() {
 		if len(args) > 0 {
 			file = args[0]
 		}
-		s := NewServer(file)
-		s.start()
+		s := gopad.NewServer(file)
+		s.Start()
 	} else {
 		if *user < 0 {
 			fmt.Println("User id is mandatory!  Use -u flag.")
 		} else {
-			StartClient(*user, *server, *port)
+			gopad.StartClient(*user, *server, *port, false)
 		}
 	}
 }

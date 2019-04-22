@@ -1,4 +1,4 @@
-package main
+package gopad
 
 import (
 	"bytes"

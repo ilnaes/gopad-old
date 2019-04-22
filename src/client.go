@@ -1,4 +1,4 @@
-package main
+package gopad
 
 // Most of these are based on a version of antirez's kilo given by
 // https://viewsourcecode.org/snaptoken/kilo/ as well as the editbox demo of termbox-go
@@ -44,7 +44,7 @@ type gopad struct {
 	numusers   int
 }
 
-func StartClient(user int, server string, port int) {
+func StartClient(user int, server string, port int, testing bool) {
 	var gp gopad
 	gp.id = user
 	gp.srv = server + ":" + strconv.Itoa(port)
@@ -60,15 +60,19 @@ func StartClient(user int, server string, port int) {
 		panic(err)
 	}
 	defer termbox.Close()
-	termbox.SetInputMode(termbox.InputEsc)
-	termbox.SetOutputMode(termbox.Output256)
+	if !testing {
+		termbox.SetInputMode(termbox.InputEsc)
+		termbox.SetOutputMode(termbox.Output256)
+	}
 
 	gp.initEditor()
 
 	go gp.push()
-	go gp.pull()
+	go gp.pull(testing)
 
-	gp.refreshScreen()
+	if !testing {
+		gp.refreshScreen()
+	}
 mainloop:
 	for {
 		switch ev := termbox.PollEvent(); ev.Type {
@@ -141,7 +145,9 @@ mainloop:
 			panic(ev.Err)
 		}
 		gp.mu.Unlock()
-		gp.refreshScreen()
+		if !testing {
+			gp.refreshScreen()
+		}
 	}
 }
 
@@ -191,7 +197,7 @@ func (gp *gopad) push() {
 }
 
 // pulls commited operations from server
-func (gp *gopad) pull() {
+func (gp *gopad) pull(testing bool) {
 	for {
 		ok := false
 
@@ -226,7 +232,9 @@ func (gp *gopad) pull() {
 					}
 					gp.mu.Unlock()
 
-					gp.refreshScreen()
+					if !testing {
+						gp.refreshScreen()
+					}
 				}
 			} else {
 				time.Sleep(pullDelay)

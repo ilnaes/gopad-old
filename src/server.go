@@ -1,4 +1,4 @@
-package main
+package gopad
 
 import (
 	"bufio"
@@ -165,7 +165,7 @@ func (s *Server) Handle(arg OpArg, reply *OpReply) error {
 	var ops []Op
 	err := json.Unmarshal(arg.Data, &ops)
 	if err != nil {
-		log.Println("Couldn't unmarshal ops", err)
+		log.Println("Couldn't unmarshal op", err)
 		reply.Err = "Encode"
 		return nil
 	}
@@ -247,7 +247,7 @@ func (s *Server) update() {
 	}
 }
 
-func (s *Server) start() {
+func (s *Server) Start() {
 	rpcs := rpc.NewServer()
 	rpcs.Register(s)
 
