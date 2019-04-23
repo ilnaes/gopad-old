@@ -2,7 +2,7 @@ package gopad
 
 import (
 	"bufio"
-	// "encoding/binary"
+	"encoding/gob"
 	"encoding/json"
 	"log"
 	"math/rand"
@@ -36,6 +36,7 @@ type Server struct {
 	commitpoint  uint32 // the upper bound of our commit log (in absolute terms)
 	discardpoint uint32 // ops below this have been discarded
 	userData     map[int]*UserData
+	seq          int
 
 	// handler  map[string]HandleFunc
 	// m sync.RWMutex
@@ -84,8 +85,34 @@ func NewServer(fname string) *Server {
 	return &e
 }
 
+func (s *Server) getOp(seq int) Paxage {
+	to := 10 * time.Millisecond
+	for {
+		status, val := s.px.status(seq)
+		if status == Decided {
+			return val.(Paxage)
+		}
+
+		time.Sleep(to)
+		if to < 10*time.Second {
+			to *= 2
+		}
+	}
+}
+
 func (s *Server) handleOp(ops []Op) {
-	s.mu.Lock()
+	// done := false
+	xid := rand.Int63()
+	for {
+		s.seq++
+		s.px.Start(s.seq, Paxage{ops, xid})
+		pkg := s.getOp(s.seq)
+
+		if pkg.Xid == xid {
+			break
+		}
+	}
+
 	for _, c := range ops {
 		s.commitLog = append(s.commitLog, c)
 		s.commitpoint++
@@ -96,7 +123,6 @@ func (s *Server) handleOp(ops []Op) {
 			s.userViews[c.Client] = c.View
 		}
 	}
-	s.mu.Unlock()
 }
 
 func (s *Server) Init(arg InitArg, reply *InitReply) error {
@@ -197,7 +223,7 @@ func (s *Server) Handle(arg OpArg, reply *OpReply) error {
 
 		if ops[len(ops)-1].Seq > s.doc.Seqs[ops[0].Client] {
 			// there is a new op
-			go s.handleOp(ops)
+			s.handleOp(ops)
 		}
 	}
 
@@ -247,37 +273,26 @@ func (s *Server) update() {
 	}
 }
 
-func (s *Server) Start() {
+func (s *Server) Start(port, me int, servers []string) {
 	rpcs := rpc.NewServer()
 	rpcs.Register(s)
 
-	port := Port
-	servers := make([]string, 0)
-	me := -1
+	var err error
+	addr := ":" + strconv.Itoa(port)
 
-	// hack for easy setup
-	for i := 0; i < 3; i++ {
-		addr := ":" + strconv.Itoa(port)
-		servers = append(servers, addr)
-
-		if me < 0 {
-			var err error
-
-			s.listener, err = net.Listen("tcp", addr)
-			if err != nil {
-				if strings.HasSuffix(err.Error(), ": address already in use") {
-				} else {
-					log.Fatal(err)
-				}
-			} else {
-				me = i
-			}
+	s.listener, err = net.Listen("tcp", addr)
+	if err != nil {
+		if strings.HasSuffix(err.Error(), ": address already in use") {
+		} else {
+			log.Fatal(err)
 		}
-
-		port++
 	}
 
-	s.px = makePaxos(servers, me, rpcs)
+	gob.Register([]Op{})
+	gob.Register(Paxage{})
+
+	s.px = makePaxos(servers, me)
+	rpcs.Register(s.px)
 
 	log.Println("Listening on", s.listener.Addr().String())
 

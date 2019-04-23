@@ -22,14 +22,16 @@ package gopad
 
 import "net"
 
-import "bytes"
-import "os"
+// import "bytes"
+// import "os"
 import "sync"
 import "fmt"
 import "math/rand"
 import "time"
-import "encoding/gob"
-import "net/rpc"
+
+// import "encoding/gob"
+
+// import "net/rpc"
 
 const Debug = true
 
@@ -72,6 +74,11 @@ type Paxos struct {
 	printing  bool
 }
 
+type Paxage struct {
+	Payload interface{}
+	Xid     int64
+}
+
 type PrepareArgs struct {
 	Seq int
 	N   int
@@ -111,64 +118,64 @@ type DoneReply struct {
 	Num int
 }
 
-func (px *Paxos) SetSave(dir string) {
-	px.save = true
-	px.saveDir = dir
-}
+// func (px *Paxos) SetSave(dir string) {
+// 	px.save = true
+// 	px.saveDir = dir
+// }
 
 // Recover data from log
-func (px *Paxos) Recover(disk bool, s string) {
-	var p Paxos
+// func (px *Paxos) Recover(disk bool, s string) {
+// 	var p Paxos
 
-	if disk {
-		file, err := os.Open(px.saveDir)
-		if err == nil {
-			decoder := gob.NewDecoder(file)
-			decoder.Decode(&p)
-		}
-		file.Close()
-	} else {
-		decoder := gob.NewDecoder(bytes.NewBufferString(s))
-		decoder.Decode(&p)
+// 	if disk {
+// 		file, err := os.Open(px.saveDir)
+// 		if err == nil {
+// 			decoder := gob.NewDecoder(file)
+// 			decoder.Decode(&p)
+// 		}
+// 		file.Close()
+// 	} else {
+// 		decoder := gob.NewDecoder(bytes.NewBufferString(s))
+// 		decoder.Decode(&p)
 
-		px.base = p.Hi + 1
-	}
+// 		px.base = p.Hi + 1
+// 	}
 
-	px.mu.Lock()
-	px.recovery = !disk
-	px.Stati = p.Stati
-	px.Hiprepare = p.Hiprepare
-	px.Hiaccept = p.Hiaccept
-	px.DoneSeqs = p.DoneSeqs
-	px.Val = p.Val
-	px.Hi = p.Hi
-	px.Lo = p.Lo
-	if px.printing && Debug {
-		fmt.Printf("RECOVERING PAXOS!  %d %d\n", px.me, px.Hi)
-	}
+// 	px.mu.Lock()
+// 	px.recovery = !disk
+// 	px.Stati = p.Stati
+// 	px.Hiprepare = p.Hiprepare
+// 	px.Hiaccept = p.Hiaccept
+// 	px.DoneSeqs = p.DoneSeqs
+// 	px.Val = p.Val
+// 	px.Hi = p.Hi
+// 	px.Lo = p.Lo
+// 	if px.printing && Debug {
+// 		fmt.Printf("RECOVERING PAXOS!  %d %d\n", px.me, px.Hi)
+// 	}
 
-	px.mu.Unlock()
-}
+// 	px.mu.Unlock()
+// }
 
-func (px *Paxos) FinishRecovery() {
-	px.recovery = false
-}
+// func (px *Paxos) FinishRecovery() {
+// 	px.recovery = false
+// }
 
-func (px *Paxos) log() {
-	if !px.save {
-		return
-	}
+// func (px *Paxos) log() {
+// 	if !px.save {
+// 		return
+// 	}
 
-	file, err := os.Create(px.saveDir + "-tmp")
-	if err != nil {
-		fmt.Println("Couldn't open file!")
-		return
-	}
-	encoder := gob.NewEncoder(file)
-	encoder.Encode(px)
+// 	file, err := os.Create(px.saveDir + "-tmp")
+// 	if err != nil {
+// 		fmt.Println("Couldn't open file!")
+// 		return
+// 	}
+// 	encoder := gob.NewEncoder(file)
+// 	encoder.Encode(px)
 
-	os.Rename(px.saveDir+"-tmp", px.saveDir)
-}
+// 	os.Rename(px.saveDir+"-tmp", px.saveDir)
+// }
 
 func (px *Paxos) Prepare(args PrepareArgs, reply *PrepareReply) error {
 	// if px.printing && Debug {
@@ -193,7 +200,7 @@ func (px *Paxos) Prepare(args PrepareArgs, reply *PrepareReply) error {
 			} else {
 				reply.High = 0
 			}
-			px.log()
+			// px.log()
 			px.mu.Unlock()
 		} else {
 			// reply with higher
@@ -220,7 +227,7 @@ func (px *Paxos) Accept(args AcceptArgs, reply *AcceptReply) error {
 			if px.Hi < args.Seq {
 				px.Hi = args.Seq
 			}
-			px.log()
+			// px.log()
 			px.mu.Unlock()
 			reply.Num = args.N
 		} else {
@@ -239,7 +246,7 @@ func (px *Paxos) Decided(args DecidedArgs, reply *DecidedReply) error {
 	// }
 	px.Stati[args.Seq] = Decided
 	px.Val[args.Seq] = args.Val
-	px.log()
+	// px.log()
 	px.mu.Unlock()
 
 	// if px.recovery {
@@ -406,7 +413,7 @@ func fateString(f Fate) string {
 // call Status() to find out if/when agreement
 // is reached.
 //
-func (px *Paxos) start(seq int, v interface{}) {
+func (px *Paxos) Start(seq int, v interface{}) {
 	px.mu.Lock()
 	s, ok := px.Stati[seq]
 	// fmt.Printf("STILL GOING! %d %#v\n", seq, v)
@@ -487,7 +494,7 @@ func (px *Paxos) updateMin() {
 				px.Stati[key] = Forgotten
 			}
 		}
-		px.log()
+		// px.log()
 	}
 }
 
@@ -562,7 +569,7 @@ func (px *Paxos) status(Seq int) (Fate, interface{}) {
 // the ports of all the paxos peers (including this one)
 // are in peers[]. this servers port is peers[me].
 //
-func makePaxos(peers []string, me int, rpcs *rpc.Server) *Paxos {
+func makePaxos(peers []string, me int) *Paxos {
 	px := &Paxos{}
 	px.peers = peers
 	px.me = me
@@ -579,8 +586,6 @@ func makePaxos(peers []string, me int, rpcs *rpc.Server) *Paxos {
 	for i := 0; i < len(peers); i++ {
 		px.DoneSeqs = append(px.DoneSeqs, -1)
 	}
-
-	rpcs.Register(px)
 
 	return px
 }

@@ -19,13 +19,27 @@ func main() {
 	flag.Parse()
 	args := flag.Args()
 
+	var b chan (int)
+	host := "localhost"
+
 	if *user == -1 {
 		file := ""
 		if len(args) > 0 {
 			file = args[0]
 		}
-		s := gopad.NewServer(file)
-		s.Start()
+
+		servers := []string{host + ":6060", host + ":6061", host + ":6062"}
+
+		s1 := gopad.NewServer(file)
+		go s1.Start(6060, 0, servers)
+		s2 := gopad.NewServer(file)
+		go s2.Start(6061, 1, servers)
+		s3 := gopad.NewServer(file)
+		go s3.Start(6062, 2, servers)
+
+		x := <-b
+		fmt.Println(x)
+
 	} else {
 		if *user < 0 {
 			fmt.Println("User id is mandatory!  Use -u flag.")

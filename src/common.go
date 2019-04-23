@@ -105,7 +105,7 @@ func call(srv string, rpcname string, args interface{}, reply interface{}, verbo
 	c, err := rpc.Dial("tcp", srv)
 	if err != nil {
 		if verbose {
-			log.Println("Couldn't connect to", srv)
+			log.Printf("Couldn't connect to %s -- %s\n", srv, rpcname)
 		}
 		return false
 	}

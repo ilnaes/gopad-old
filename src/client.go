@@ -5,7 +5,7 @@ package gopad
 
 import (
 	"encoding/json"
-	"fmt"
+	// "fmt"
 	"github.com/nsf/termbox-go"
 	"log"
 	"math/rand"
@@ -50,10 +50,7 @@ func StartClient(user int, server string, port int, testing bool) {
 	gp.srv = server + ":" + strconv.Itoa(port)
 	gp.tempRUsers = make(map[int]int)
 
-	fmt.Println(gp.srv)
-
 	gp.editorOpen(gp.srv, 0, user)
-	gp.status = fmt.Sprintf("%d", gp.doc.View)
 
 	err := termbox.Init()
 	if err != nil {
