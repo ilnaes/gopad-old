@@ -25,6 +25,7 @@ const (
 	Newline
 	Init
 	Move
+	Quit
 )
 
 type Err string
@@ -82,6 +83,7 @@ type QueryArg struct {
 
 type OpArg struct {
 	Data []byte
+	Xid  int64
 }
 
 type InitReply struct {
@@ -294,7 +296,7 @@ func editorMoveCursor(doc *Doc, id int, key termbox.Key) {
 	case termbox.KeyArrowRight:
 		if row != nil && pos.X < len(row.Chars) {
 			pos.X++
-		} else if row != nil && pos.X >= len(row.Chars) {
+		} else if row != nil && pos.X >= len(row.Chars) && pos.Y < len(doc.Rows)-1 {
 			pos.Y++
 			pos.X = 0
 		}
@@ -353,7 +355,7 @@ func editorInsertRune(doc *Doc, id int, key rune, temp bool) {
 	for k, npos := range doc.UserPos {
 		// update other positions
 		if k != id {
-			if pos.Y == npos.Y && pos.X <= npos.X {
+			if pos.Y == npos.Y && pos.X < npos.X {
 				npos.X++
 			}
 		}

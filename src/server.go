@@ -101,7 +101,6 @@ func (s *Server) getOp(seq int) Paxage {
 }
 
 func (s *Server) handleOp(ops []Op) {
-	// done := false
 	xid := rand.Int63()
 	for {
 		s.seq++
@@ -110,17 +109,6 @@ func (s *Server) handleOp(ops []Op) {
 
 		if pkg.Xid == xid {
 			break
-		}
-	}
-
-	for _, c := range ops {
-		s.commitLog = append(s.commitLog, c)
-		s.commitpoint++
-		if c.Seq == s.userSeqs[c.Client]+1 {
-			s.userSeqs[c.Client]++
-		}
-		if s.userViews[c.Client] < c.View {
-			s.userViews[c.Client] = c.View
 		}
 	}
 }
@@ -138,11 +126,11 @@ func (s *Server) Init(arg InitArg, reply *InitReply) error {
 
 	if s.userData[arg.Client] == nil {
 		// new user
-		go s.handleOp([]Op{Op{Type: Init, View: arg.Xid, Client: arg.Client, Seq: 1}})
+		s.handleOp([]Op{Op{Type: Init, View: arg.Xid, Client: arg.Client, Seq: 1}})
 		reply.Err = "Redo"
 	} else if s.userData[arg.Client].xid != arg.Xid {
 		// old user new session
-		go s.handleOp([]Op{Op{Type: Init, View: arg.Xid, Client: arg.Client, Seq: s.userSeqs[arg.Client] + 1}})
+		s.handleOp([]Op{Op{Type: Init, View: arg.Xid, Client: arg.Client, Seq: s.userSeqs[arg.Client] + 1}})
 		reply.Err = "Redo"
 	} else {
 		// marshal document and send back
@@ -196,35 +184,35 @@ func (s *Server) Handle(arg OpArg, reply *OpReply) error {
 		return nil
 	}
 
-	if len(ops) > 0 {
-		s.mu.Lock()
-		defer s.mu.Unlock()
-		if ops[0].Seq > s.doc.Seqs[ops[0].Client]+1 {
-			// sequence number larger than expected
-			reply.Err = "High"
-			return nil
-		}
+	// log.Printf("RECEIVED: %v\n", ops)
 
-		if len(ops) > 1 {
-			for i := 1; i < len(ops); i++ {
-				if ops[i].Seq != ops[i-1].Seq+1 {
-					// out of sequential order
-					reply.Err = "Order"
-					return nil
-				}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if ops[0].Seq > s.doc.Seqs[ops[0].Client]+1 {
+		// sequence number larger than expected
+		reply.Err = "High"
+		return nil
+	}
 
-				if ops[i].Client != ops[i-1].Client {
-					// different client ids
-					reply.Err = "Client"
-					return nil
-				}
+	if len(ops) > 1 {
+		for i := 1; i < len(ops); i++ {
+			if ops[i].Seq != ops[i-1].Seq+1 {
+				// out of sequential order
+				reply.Err = "Order"
+				return nil
+			}
+
+			if ops[i].Client != ops[i-1].Client {
+				// different client ids
+				reply.Err = "Client"
+				return nil
 			}
 		}
+	}
 
-		if ops[len(ops)-1].Seq > s.doc.Seqs[ops[0].Client] {
-			// there is a new op
-			s.handleOp(ops)
-		}
+	if ops[len(ops)-1].Seq > s.doc.Seqs[ops[0].Client] {
+		// there is a new op
+		s.handleOp(ops)
 	}
 
 	reply.Err = "OK"
@@ -233,27 +221,44 @@ func (s *Server) Handle(arg OpArg, reply *OpReply) error {
 
 // apply log
 func (s *Server) update() {
+	seq := 1
+	var ops []Op
 	for {
+		status, val := s.px.status(seq)
+		if status == Pending {
+			time.Sleep(updateDelay)
+			continue
+		}
+		seq++
+
+		// get package from paxos
+		ops = (val.(Paxage)).Payload.([]Op)
 		s.mu.Lock()
 
-		if s.doc.View < s.commitpoint {
-			for _, c := range s.commitLog[s.doc.View-s.discardpoint : s.commitpoint-s.discardpoint] {
-				if c.Seq == s.doc.Seqs[c.Client]+1 {
-					s.doc.apply(c, false)
-					s.doc.Seqs[c.Client]++
+		// append to commit log
+		for _, c := range ops {
+			if c.Seq == s.userSeqs[c.Client]+1 {
+				s.commitLog = append(s.commitLog, c)
+				s.commitpoint++
+				s.userSeqs[c.Client]++
 
-					// TODO: handle Inits
-					if c.Type == Init {
-						if s.userData[c.Client] == nil || s.userData[c.Client].xid != c.View {
-							s.userData[c.Client] = &UserData{doc: s.doc.copy(), xid: c.View}
-							s.userData[c.Client].doc.View++
-							s.userViews[c.Client] = s.userData[c.Client].doc.View // correct?
-						}
+				s.doc.apply(c, false)
+				s.doc.Seqs[c.Client]++
+
+				// TODO: handle Inits
+				if c.Type == Init {
+					if s.userData[c.Client] == nil || s.userData[c.Client].xid != c.View {
+						s.userData[c.Client] = &UserData{doc: s.doc.copy(), xid: c.View}
+						s.userData[c.Client].doc.View++
+						s.userViews[c.Client] = s.userData[c.Client].doc.View // correct?
 					}
 				}
+
 				s.doc.View++
 			}
-
+			if s.userViews[c.Client] < c.View && c.Type != Init {
+				s.userViews[c.Client] = c.View
+			}
 		}
 
 		var min uint32

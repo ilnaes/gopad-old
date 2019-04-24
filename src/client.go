@@ -67,11 +67,9 @@ func StartClient(user int, server string, port int, testing bool) {
 	go gp.push()
 	go gp.pull(testing)
 
-	if !testing {
-		gp.refreshScreen()
-	}
 mainloop:
 	for {
+		gp.refreshScreen()
 		switch ev := termbox.PollEvent(); ev.Type {
 		case termbox.EventKey:
 			gp.mu.Lock()
@@ -102,7 +100,7 @@ mainloop:
 				termbox.KeyHome,
 				termbox.KeyEnd:
 				gp.logOp([]Op{Op{Type: Move, Move: ev.Key, View: gp.doc.View, Client: gp.id}})
-				editorMoveCursor(&gp.tempdoc, gp.id, ev.Key)
+				// editorMoveCursor(&gp.tempdoc, gp.id, ev.Key)
 			// case termbox.KeyPgup, termbox.KeyPgdn:
 			// 	for times := gp.screenrows; times > 0; times-- {
 			// 		var x termbox.Key
@@ -115,36 +113,33 @@ mainloop:
 			// 	}
 			case termbox.KeyBackspace, termbox.KeyBackspace2:
 				gp.logOp([]Op{Op{Type: Delete, View: gp.doc.View, Client: gp.id}})
-				editorDelRune(&gp.tempdoc, gp.id)
+				// editorDelRune(&gp.tempdoc, gp.id)
 			case termbox.KeyDelete, termbox.KeyCtrlD:
 				gp.logOp([]Op{
 					Op{Type: Move, Move: termbox.KeyArrowRight, View: gp.doc.View, Client: gp.id},
 					Op{Type: Delete, View: gp.doc.View, Client: gp.id},
 				})
-				editorMoveCursor(&gp.tempdoc, gp.id, termbox.KeyArrowRight)
-				editorDelRune(&gp.tempdoc, gp.id)
+				// editorMoveCursor(&gp.tempdoc, gp.id, termbox.KeyArrowRight)
+				// editorDelRune(&gp.tempdoc, gp.id)
 			case termbox.KeyTab:
 				gp.logOp([]Op{Op{Type: Insert, Data: '\t', View: gp.doc.View, Client: gp.id}})
-				editorInsertRune(&gp.tempdoc, gp.id, '\t', true)
+				// editorInsertRune(&gp.tempdoc, gp.id, '\t', true)
 			case termbox.KeySpace:
 				gp.logOp([]Op{Op{Type: Insert, Data: ' ', View: gp.doc.View, Client: gp.id}})
-				editorInsertRune(&gp.tempdoc, gp.id, ' ', true)
+				// editorInsertRune(&gp.tempdoc, gp.id, ' ', true)
 			case termbox.KeyEnter:
 				gp.logOp([]Op{Op{Type: Newline, View: gp.doc.View, Client: gp.id}})
-				editorInsertNewLine(&gp.tempdoc, gp.id)
+				// editorInsertNewLine(&gp.tempdoc, gp.id)
 			default:
 				if ev.Ch != 0 {
 					gp.logOp([]Op{Op{Type: Insert, Data: ev.Ch, View: gp.doc.View, Client: gp.id}})
-					editorInsertRune(&gp.tempdoc, gp.id, ev.Ch, true)
+					// editorInsertRune(&gp.tempdoc, gp.id, ev.Ch, true)
 				}
 			}
 		case termbox.EventError:
 			panic(ev.Err)
 		}
 		gp.mu.Unlock()
-		if !testing {
-			gp.refreshScreen()
-		}
 	}
 }
 
@@ -153,6 +148,7 @@ func (gp *gopad) logOp(ops []Op) {
 		gp.opNum++
 		op.Seq = gp.opNum
 		gp.selfOps = append(gp.selfOps, op)
+		gp.tempdoc.apply(op, true)
 	}
 }
 
@@ -179,14 +175,14 @@ func (gp *gopad) push() {
 		ok := false
 		for !ok {
 			var reply OpReply
-			ok = call(gp.srv, "Server.Handle", OpArg{Data: buf}, &reply, false)
-			if ok {
-				// gp.mu.Lock()
+			ok = call(gp.srv, "Server.Handle", OpArg{Data: buf, Xid: rand.Int63()}, &reply, false)
+			if !ok {
 				// if reply.Err == "OK" {
-				// 	// update op sent point
-				// 	gp.sentpoint = l
-				// }
+				// cut off pushed ops
+				// gp.mu.Lock()
+				// gp.selfOps = gp.selfOps[l:]
 				// gp.mu.Unlock()
+				// }
 			}
 		}
 		time.Sleep(pushDelay)
