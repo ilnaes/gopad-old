@@ -5,7 +5,7 @@ package gopad
 
 import (
 	"encoding/json"
-	// "fmt"
+	"fmt"
 	"github.com/nsf/termbox-go"
 	"log"
 	"math/rand"
@@ -73,7 +73,6 @@ mainloop:
 		switch ev := termbox.PollEvent(); ev.Type {
 		case termbox.EventKey:
 			gp.mu.Lock()
-			gp.status = ""
 			switch ev.Key {
 			case termbox.KeyCtrlC:
 				break mainloop
@@ -287,7 +286,6 @@ func (gp *gopad) editorPrompt(msg, file string) (string, bool) {
 func (gp *gopad) editorScroll() {
 
 	for id, pos := range gp.tempdoc.UserPos {
-		gp.tempRUsers[id] = 0
 		if pos.Y < len(gp.doc.Rows) {
 			gp.tempRUsers[id] = editorRowCxToRx(&gp.tempdoc.Rows[pos.Y], pos.X)
 		}
@@ -336,7 +334,7 @@ func (gp *gopad) drawRows() {
 						// draw other cursors
 						for user, pos := range gp.tempdoc.UserPos {
 							if user != gp.id {
-								if gp.tempRUsers[user] == k && pos.Y == filerow {
+								if gp.tempRUsers[user]-gp.coloff == k && pos.Y == filerow {
 									bg = CURSORS[gp.doc.Colors[user]]
 								}
 							}
@@ -410,6 +408,7 @@ func (gp *gopad) editorDrawStatusBar() {
 }
 
 func (gp *gopad) refreshScreen() {
+	gp.status = fmt.Sprintf("%v", gp.tempRUsers)
 	gp.mu.Lock()
 	const coldef = termbox.ColorDefault
 	termbox.Clear(coldef, coldef)
