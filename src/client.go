@@ -5,7 +5,7 @@ package gopad
 
 import (
 	"encoding/json"
-	"fmt"
+	// "fmt"
 	"github.com/nsf/termbox-go"
 	"log"
 	"math/rand"
@@ -99,7 +99,6 @@ mainloop:
 				termbox.KeyHome,
 				termbox.KeyEnd:
 				gp.logOp([]Op{Op{Type: Move, Move: ev.Key, View: gp.doc.View, Client: gp.id}})
-				// editorMoveCursor(&gp.tempdoc, gp.id, ev.Key)
 			// case termbox.KeyPgup, termbox.KeyPgdn:
 			// 	for times := gp.screenrows; times > 0; times-- {
 			// 		var x termbox.Key
@@ -112,33 +111,26 @@ mainloop:
 			// 	}
 			case termbox.KeyBackspace, termbox.KeyBackspace2:
 				gp.logOp([]Op{Op{Type: Delete, View: gp.doc.View, Client: gp.id}})
-				// editorDelRune(&gp.tempdoc, gp.id)
 			case termbox.KeyDelete, termbox.KeyCtrlD:
 				gp.logOp([]Op{
 					Op{Type: Move, Move: termbox.KeyArrowRight, View: gp.doc.View, Client: gp.id},
 					Op{Type: Delete, View: gp.doc.View, Client: gp.id},
 				})
-				// editorMoveCursor(&gp.tempdoc, gp.id, termbox.KeyArrowRight)
-				// editorDelRune(&gp.tempdoc, gp.id)
 			case termbox.KeyTab:
 				gp.logOp([]Op{Op{Type: Insert, Data: '\t', View: gp.doc.View, Client: gp.id}})
-				// editorInsertRune(&gp.tempdoc, gp.id, '\t', true)
 			case termbox.KeySpace:
 				gp.logOp([]Op{Op{Type: Insert, Data: ' ', View: gp.doc.View, Client: gp.id}})
-				// editorInsertRune(&gp.tempdoc, gp.id, ' ', true)
 			case termbox.KeyEnter:
 				gp.logOp([]Op{Op{Type: Newline, View: gp.doc.View, Client: gp.id}})
-				// editorInsertNewLine(&gp.tempdoc, gp.id)
 			default:
 				if ev.Ch != 0 {
 					gp.logOp([]Op{Op{Type: Insert, Data: ev.Ch, View: gp.doc.View, Client: gp.id}})
-					// editorInsertRune(&gp.tempdoc, gp.id, ev.Ch, true)
 				}
 			}
+			gp.mu.Unlock()
 		case termbox.EventError:
 			panic(ev.Err)
 		}
-		gp.mu.Unlock()
 	}
 }
 
@@ -286,7 +278,8 @@ func (gp *gopad) editorPrompt(msg, file string) (string, bool) {
 func (gp *gopad) editorScroll() {
 
 	for id, pos := range gp.tempdoc.UserPos {
-		if pos.Y < len(gp.doc.Rows) {
+		gp.tempRUsers[id] = 0
+		if pos.Y < len(gp.tempdoc.Rows) {
 			gp.tempRUsers[id] = editorRowCxToRx(&gp.tempdoc.Rows[pos.Y], pos.X)
 		}
 	}
@@ -408,10 +401,11 @@ func (gp *gopad) editorDrawStatusBar() {
 }
 
 func (gp *gopad) refreshScreen() {
-	gp.status = fmt.Sprintf("%v", gp.tempRUsers)
+	// gp.status = fmt.Sprintf("%v", gp.tempRUsers)
 	gp.mu.Lock()
 	const coldef = termbox.ColorDefault
 	termbox.Clear(coldef, coldef)
+	gp.initEditor()
 
 	gp.editorScroll()
 	gp.drawRows()
