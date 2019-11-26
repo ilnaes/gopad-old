@@ -86,6 +86,9 @@ type OpArg struct {
 	Xid  int64
 }
 
+type RecoverArg struct {
+}
+
 type InitReply struct {
 	Doc     []byte
 	Commits []byte
@@ -99,6 +102,11 @@ type OpReply struct {
 type QueryReply struct {
 	Data []byte
 	Err  Err
+}
+
+type RecoverReply struct {
+	Srv string
+	Px  string
 }
 
 func call(srv string, rpcname string, args interface{}, reply interface{}, verbose bool) bool {
@@ -154,7 +162,7 @@ func (doc *Doc) write(filename string) bool {
 }
 
 // copies doc
-func (doc *Doc) copy() *Doc {
+func (doc *Doc) dup() *Doc {
 	d := Doc{View: doc.View}
 	d.Rows = make([]erow, len(doc.Rows))
 	for i := 0; i < len(d.Rows); i++ {

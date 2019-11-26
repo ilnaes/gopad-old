@@ -205,7 +205,7 @@ func (gp *gopad) pull(testing bool) {
 						gp.selfOps = gp.selfOps[gp.doc.Seqs[gp.id]-oldPoint:]
 					}
 
-					gp.tempdoc = *gp.doc.copy()
+					gp.tempdoc = *gp.doc.dup()
 					for k, v := range gp.doc.UserPos {
 						x := *v
 						gp.tempdoc.UserPos[k] = &x
@@ -432,7 +432,7 @@ func (gp *gopad) editorOpen(server string, view int, user int) {
 					log.Fatal("Couldn't decode document")
 				}
 
-				gp.tempdoc = *gp.doc.copy()
+				gp.tempdoc = *gp.doc.dup()
 				gp.opNum = gp.doc.Seqs[user]
 
 				// // update positions

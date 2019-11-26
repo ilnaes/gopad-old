@@ -27,7 +27,7 @@ type UserData struct {
 type Server struct {
 	listener     net.Listener
 	commitLog    []Op
-	doc          Doc
+	doc          *Doc
 	px           *Paxos
 	mu           sync.Mutex
 	userSeqs     map[int]uint32 // last reported sequence by user
@@ -37,49 +37,83 @@ type Server struct {
 	discardpoint uint32 // ops below this have been discarded
 	userData     map[int]*UserData
 	seq          int
+	reboot       bool
+	servers      []string
+	me           int
+	port         int
 
 	// handler  map[string]HandleFunc
 	// m sync.RWMutex
 }
 
-func NewServer(fname string) *Server {
-	doc := Doc{
-		Id:      rand.Uint32(),
-		Seqs:    make(map[int]uint32),
-		UserPos: make(map[int]*Pos),
-		Colors:  make(map[int]int),
+func (s *Server) Copy(args *RecoverArg, reply *RecoverReply) {
+}
+
+func (s *Server) Recover(servers []string) {
+	done := false
+	var reply RecoverReply
+
+	for !done {
+		for _, srv := range servers {
+			ok := call(srv, "NewServer.Copy", &RecoverArg{}, &reply, false)
+			if ok {
+				done = true
+			}
+		}
 	}
+}
+
+func NewServer(fname string, reboot bool, port int, servers []string, me int) *Server {
+	var doc Doc
 	e := Server{
-		doc:       doc,
-		userSeqs:  make(map[int]uint32),
-		userViews: make(map[int]uint32),
-		commitLog: make([]Op, 0),
-		userData:  make(map[int]*UserData),
+		reboot:  reboot,
+		servers: servers,
+		me:      me,
+		port:    port,
 	}
 
-	if fname != "" {
-		file, err := os.Open(fname)
-		if err != nil {
-			log.Fatal(err)
+	if !reboot {
+		e.userSeqs = make(map[int]uint32)
+		e.userViews = make(map[int]uint32)
+		e.commitLog = make([]Op, 0)
+		e.userData = make(map[int]*UserData)
+
+		// new document, so start fresh
+		doc = Doc{
+			Id:      rand.Uint32(),
+			Seqs:    make(map[int]uint32),
+			UserPos: make(map[int]*Pos),
+			Colors:  make(map[int]int),
 		}
-		defer file.Close()
-		scanner := bufio.NewScanner(file)
-		for scanner.Scan() {
-			e.doc.Rows = append(e.doc.Rows,
+
+		if fname != "" {
+			file, err := os.Open(fname)
+			if err != nil {
+				log.Fatal(err)
+			}
+			defer file.Close()
+			scanner := bufio.NewScanner(file)
+			for scanner.Scan() {
+				doc.Rows = append(doc.Rows,
+					erow{
+						Chars:  scanner.Text(),
+						Temp:   make([]bool, len(scanner.Text())),
+						Author: make([]int, len(scanner.Text())),
+					})
+			}
+		} else {
+			// empty first row
+			doc.Rows = append(doc.Rows,
 				erow{
-					Chars:  scanner.Text(),
-					Temp:   make([]bool, len(scanner.Text())),
-					Author: make([]int, len(scanner.Text())),
+					Chars:  "",
+					Temp:   make([]bool, 0),
+					Author: make([]int, 0),
 				})
 		}
+
+		e.doc = &doc
 	} else {
-		// empty first row
-		e.doc.Rows = append(e.doc.Rows,
-			erow{
-				Chars:  "",
-				Temp:   make([]bool, 0),
-				Author: make([]int, 0),
-			})
+		e.Recover(servers)
 	}
 
 	return &e
@@ -248,7 +282,7 @@ func (s *Server) update() {
 				// TODO: handle Inits
 				if c.Type == Init {
 					if s.userData[c.Client] == nil || s.userData[c.Client].xid != c.View {
-						s.userData[c.Client] = &UserData{doc: s.doc.copy(), xid: c.View}
+						s.userData[c.Client] = &UserData{doc: s.doc.dup(), xid: c.View}
 						s.userData[c.Client].doc.View++
 						s.userViews[c.Client] = s.userData[c.Client].doc.View // correct?
 					}
@@ -260,6 +294,8 @@ func (s *Server) update() {
 				s.userViews[c.Client] = c.View
 			}
 		}
+
+		s.px.Done(seq)
 
 		var min uint32
 		for _, v := range s.userViews {
@@ -278,13 +314,13 @@ func (s *Server) update() {
 	}
 }
 
-func (s *Server) Start(port, me int, servers []string) {
+func (s *Server) Start() {
 	rpcs := rpc.NewServer()
 	rpcs.Register(s)
 
-	var err error
-	addr := ":" + strconv.Itoa(port)
+	addr := ":" + strconv.Itoa(s.port)
 
+	var err error
 	s.listener, err = net.Listen("tcp", addr)
 	if err != nil {
 		if strings.HasSuffix(err.Error(), ": address already in use") {
@@ -296,7 +332,7 @@ func (s *Server) Start(port, me int, servers []string) {
 	gob.Register([]Op{})
 	gob.Register(Paxage{})
 
-	s.px = makePaxos(servers, me)
+	s.px = makePaxos(s.servers, s.me)
 	rpcs.Register(s.px)
 
 	log.Println("Listening on", s.listener.Addr().String())
