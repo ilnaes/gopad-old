@@ -2,6 +2,7 @@ package gopad
 
 import (
 	"bufio"
+	"bytes"
 	"encoding/gob"
 	"encoding/json"
 	"log"
@@ -41,12 +42,32 @@ type Server struct {
 	servers      []string
 	me           int
 	port         int
-
 	// handler  map[string]HandleFunc
 	// m sync.RWMutex
 }
 
 func (s *Server) Copy(args *RecoverArg, reply *RecoverReply) {
+	if !s.reboot {
+		s.mu.Lock()
+		s.px.Lock()
+
+		var buf1, buf2 bytes.Buffer
+
+		encoder := gob.NewEncoder(&buf1)
+		encoder.Encode(s)
+		reply.Srv = buf1.String()
+
+		encoder = gob.NewEncoder(&buf2)
+		encoder.Encode(s.px)
+		reply.Px = buf2.String()
+
+		reply.Err = "OK"
+
+		s.px.Unlock()
+		s.mu.Unlock()
+	} else {
+		reply.Err = "REBOOT"
+	}
 }
 
 func (s *Server) Recover(servers []string) {
@@ -56,8 +77,9 @@ func (s *Server) Recover(servers []string) {
 	for !done {
 		for _, srv := range servers {
 			ok := call(srv, "NewServer.Copy", &RecoverArg{}, &reply, false)
-			if ok {
+			if ok && reply.Err == "OK" {
 				done = true
+				s.reboot = false
 			}
 		}
 	}
@@ -65,7 +87,7 @@ func (s *Server) Recover(servers []string) {
 
 func NewServer(fname string, reboot bool, port int, servers []string, me int) *Server {
 	var doc Doc
-	e := Server{
+	s := Server{
 		reboot:  reboot,
 		servers: servers,
 		me:      me,
@@ -73,10 +95,10 @@ func NewServer(fname string, reboot bool, port int, servers []string, me int) *S
 	}
 
 	if !reboot {
-		e.userSeqs = make(map[int]uint32)
-		e.userViews = make(map[int]uint32)
-		e.commitLog = make([]Op, 0)
-		e.userData = make(map[int]*UserData)
+		s.userSeqs = make(map[int]uint32)
+		s.userViews = make(map[int]uint32)
+		s.commitLog = make([]Op, 0)
+		s.userData = make(map[int]*UserData)
 
 		// new document, so start fresh
 		doc = Doc{
@@ -111,12 +133,12 @@ func NewServer(fname string, reboot bool, port int, servers []string, me int) *S
 				})
 		}
 
-		e.doc = &doc
+		s.doc = &doc
 	} else {
-		e.Recover(servers)
+		s.Recover(servers)
 	}
 
-	return &e
+	return &s
 }
 
 func (s *Server) getOp(seq int) Paxage {

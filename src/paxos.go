@@ -177,6 +177,14 @@ type DoneReply struct {
 // 	os.Rename(px.saveDir+"-tmp", px.saveDir)
 // }
 
+func (px *Paxos) Lock() {
+	px.mu.Lock()
+}
+
+func (px *Paxos) Unlock() {
+	px.mu.Unlock()
+}
+
 func (px *Paxos) Prepare(args PrepareArgs, reply *PrepareReply) error {
 	// if px.printing && Debug {
 	// 	fmt.Printf("PREPARE %d %d %t\n", px.me, args.Seq, px.recovery)

@@ -107,6 +107,7 @@ type QueryReply struct {
 type RecoverReply struct {
 	Srv string
 	Px  string
+	Err Err
 }
 
 func call(srv string, rpcname string, args interface{}, reply interface{}, verbose bool) bool {
