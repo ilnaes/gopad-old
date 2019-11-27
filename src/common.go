@@ -105,8 +105,8 @@ type QueryReply struct {
 }
 
 type RecoverReply struct {
-	Srv string
-	Px  string
+	Srv []byte
+	Px  []byte
 	Err Err
 }
 

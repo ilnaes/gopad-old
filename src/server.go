@@ -2,7 +2,6 @@ package gopad
 
 import (
 	"bufio"
-	"bytes"
 	"encoding/gob"
 	"encoding/json"
 	"log"
@@ -26,11 +25,19 @@ type UserData struct {
 }
 
 type Server struct {
-	listener     net.Listener
-	commitLog    []Op
+	listener net.Listener
+	px       *Paxos
+	mu       sync.Mutex
+
+	// config
+	reboot  bool
+	servers []string
+	me      int
+	port    int
+
+	// data
 	doc          *Doc
-	px           *Paxos
-	mu           sync.Mutex
+	commitLog    []Op
 	userSeqs     map[int]uint32 // last reported sequence by user
 	userViews    map[int]uint32 // last reported view number by user
 	numusers     int
@@ -38,10 +45,7 @@ type Server struct {
 	discardpoint uint32 // ops below this have been discarded
 	userData     map[int]*UserData
 	seq          int
-	reboot       bool
-	servers      []string
-	me           int
-	port         int
+
 	// handler  map[string]HandleFunc
 	// m sync.RWMutex
 }
@@ -51,15 +55,8 @@ func (s *Server) Copy(args *RecoverArg, reply *RecoverReply) {
 		s.mu.Lock()
 		s.px.Lock()
 
-		var buf1, buf2 bytes.Buffer
-
-		encoder := gob.NewEncoder(&buf1)
-		encoder.Encode(s)
-		reply.Srv = buf1.String()
-
-		encoder = gob.NewEncoder(&buf2)
-		encoder.Encode(s.px)
-		reply.Px = buf2.String()
+		reply.Srv, _ = json.Marshal(s)
+		reply.Px, _ = json.Marshal(s.px)
 
 		reply.Err = "OK"
 
@@ -172,16 +169,17 @@ func (s *Server) handleOp(ops []Op) {
 func (s *Server) Init(arg InitArg, reply *InitReply) error {
 	log.Println("Sending initial...", arg.Client)
 
-	if len(s.doc.Colors) >= MAXUSERS {
-		reply.Err = "Full"
-		return nil
-	}
-
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
 	if s.userData[arg.Client] == nil {
+
 		// new user
+		if len(s.doc.Colors) >= MAXUSERS {
+			reply.Err = "Full"
+			return nil
+		}
+
 		s.handleOp([]Op{Op{Type: Init, View: arg.Xid, Client: arg.Client, Seq: 1}})
 		reply.Err = "Redo"
 	} else if s.userData[arg.Client].xid != arg.Xid {
