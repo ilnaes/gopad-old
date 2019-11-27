@@ -24,13 +24,13 @@ import "net"
 
 // import "bytes"
 // import "os"
+import "encoding/json"
 import "sync"
 import "fmt"
 import "math/rand"
 import "time"
 
 // import "encoding/gob"
-
 // import "net/rpc"
 
 const Debug = true
@@ -48,17 +48,17 @@ const (
 )
 
 type Paxos struct {
-	mu         sync.Mutex
-	l          net.Listener
-	dead       int32 // for testing
-	unreliable int32 // for testing
-	peers      []string
-	me         int // index into peers[]
+	mu    sync.Mutex
+	l     net.Listener
+	peers []string
+	me    int // index into peers[]
+	// dead       int32 // for testing
+	// unreliable int32 // for testing
 
 	// result map[int]interface{}
 	// Your data here.
-	saveDir string
-	save    bool
+	// saveDir string
+	// save    bool
 
 	// Handler func(int)
 
@@ -69,9 +69,9 @@ type Paxos struct {
 	Hiaccept  map[int]int
 	Val       map[int]interface{}
 	DoneSeqs  []int
-	base      int
 	recovery  bool
 	printing  bool
+	// base      int
 }
 
 type Paxage struct {
@@ -123,39 +123,42 @@ type DoneReply struct {
 // 	px.saveDir = dir
 // }
 
-// Recover data from log
-// func (px *Paxos) Recover(disk bool, s string) {
-// 	var p Paxos
+// Recover data from data
+func (px *Paxos) Recover(data []byte) {
+	var p Paxos
 
-// 	if disk {
-// 		file, err := os.Open(px.saveDir)
-// 		if err == nil {
-// 			decoder := gob.NewDecoder(file)
-// 			decoder.Decode(&p)
-// 		}
-// 		file.Close()
-// 	} else {
-// 		decoder := gob.NewDecoder(bytes.NewBufferString(s))
-// 		decoder.Decode(&p)
+	// if disk {
+	// 	file, err := os.Open(px.saveDir)
+	// 	if err == nil {
+	// 		decoder := gob.NewDecoder(file)
+	// 		decoder.Decode(&p)
+	// 	}
+	// 	file.Close()
+	// } else {
+	// decoder := gob.NewDecoder(bytes.NewBufferString(s))
+	// decoder.Decode(&p)
+	if json.Unmarshal(data, &p) != nil {
+		// TODO
+	}
 
-// 		px.base = p.Hi + 1
-// 	}
+	// px.base = p.Hi + 1
+	// }
 
-// 	px.mu.Lock()
-// 	px.recovery = !disk
-// 	px.Stati = p.Stati
-// 	px.Hiprepare = p.Hiprepare
-// 	px.Hiaccept = p.Hiaccept
-// 	px.DoneSeqs = p.DoneSeqs
-// 	px.Val = p.Val
-// 	px.Hi = p.Hi
-// 	px.Lo = p.Lo
-// 	if px.printing && Debug {
-// 		fmt.Printf("RECOVERING PAXOS!  %d %d\n", px.me, px.Hi)
-// 	}
+	px.mu.Lock()
+	// px.recovery = !disk
+	px.Stati = p.Stati
+	px.Hiprepare = p.Hiprepare
+	px.Hiaccept = p.Hiaccept
+	px.DoneSeqs = p.DoneSeqs
+	px.Val = p.Val
+	px.Hi = p.Hi
+	px.Lo = p.Lo
+	if px.printing && Debug {
+		fmt.Printf("RECOVERING PAXOS!  %d %d\n", px.me, px.Hi)
+	}
 
-// 	px.mu.Unlock()
-// }
+	px.mu.Unlock()
+}
 
 // func (px *Paxos) FinishRecovery() {
 // 	px.recovery = false

@@ -20,8 +20,8 @@ var (
 )
 
 type UserData struct {
-	doc *Doc
-	xid uint32
+	Doc *Doc
+	Xid uint32
 }
 
 type Server struct {
@@ -36,21 +36,20 @@ type Server struct {
 	port    int
 
 	// data
-	doc          *Doc
-	commitLog    []Op
-	userSeqs     map[int]uint32 // last reported sequence by user
-	userViews    map[int]uint32 // last reported view number by user
-	numusers     int
-	commitpoint  uint32 // the upper bound of our commit log (in absolute terms)
-	discardpoint uint32 // ops below this have been discarded
-	userData     map[int]*UserData
-	seq          int
+	Doc          *Doc
+	CommitLog    []Op
+	UserSeqs     map[int]uint32 // last reported sequence by user
+	UserViews    map[int]uint32 // last reported view number by user
+	CommitPoint  uint32         // the upper bound of our commit log (in absolute terms)
+	DiscardPoint uint32         // ops below this have been discarded
+	UserDoc      map[int]*UserData
+	Seq          int
 
 	// handler  map[string]HandleFunc
 	// m sync.RWMutex
 }
 
-func (s *Server) Copy(args *RecoverArg, reply *RecoverReply) {
+func (s *Server) Copy(args *RecoverArg, reply *RecoverReply) error {
 	if !s.reboot {
 		s.mu.Lock()
 		s.px.Lock()
@@ -62,24 +61,36 @@ func (s *Server) Copy(args *RecoverArg, reply *RecoverReply) {
 
 		s.px.Unlock()
 		s.mu.Unlock()
+		log.Println("HERE")
 	} else {
-		reply.Err = "REBOOT"
+		reply.Err = "REBOOTING"
 	}
+
+	return nil
 }
 
 func (s *Server) Recover(servers []string) {
 	done := false
 	var reply RecoverReply
+	var tmp Server
 
 	for !done {
-		for _, srv := range servers {
-			ok := call(srv, "NewServer.Copy", &RecoverArg{}, &reply, false)
-			if ok && reply.Err == "OK" {
-				done = true
-				s.reboot = false
+		for i, srv := range servers {
+			log.Println(i, srv, s.me)
+			if i != s.me {
+				ok := call(srv, "Server.Copy", RecoverArg{}, &reply, false)
+				log.Println(reply.Err)
+				if ok && reply.Err == "OK" {
+					json.Unmarshal(reply.Srv, &tmp)
+					s.px.Recover(reply.Px)
+					done = true
+				}
 			}
+			time.Sleep(updateDelay)
 		}
 	}
+
+	s.Seq = tmp.Seq
 }
 
 func NewServer(fname string, reboot bool, port int, servers []string, me int) *Server {
@@ -89,13 +100,14 @@ func NewServer(fname string, reboot bool, port int, servers []string, me int) *S
 		servers: servers,
 		me:      me,
 		port:    port,
+		px:      makePaxos(servers, me),
 	}
 
 	if !reboot {
-		s.userSeqs = make(map[int]uint32)
-		s.userViews = make(map[int]uint32)
-		s.commitLog = make([]Op, 0)
-		s.userData = make(map[int]*UserData)
+		s.UserSeqs = make(map[int]uint32)
+		s.UserViews = make(map[int]uint32)
+		s.CommitLog = make([]Op, 0)
+		s.UserDoc = make(map[int]*UserData)
 
 		// new document, so start fresh
 		doc = Doc{
@@ -130,7 +142,7 @@ func NewServer(fname string, reboot bool, port int, servers []string, me int) *S
 				})
 		}
 
-		s.doc = &doc
+		s.Doc = &doc
 	} else {
 		s.Recover(servers)
 	}
@@ -156,9 +168,9 @@ func (s *Server) getOp(seq int) Paxage {
 func (s *Server) handleOp(ops []Op) {
 	xid := rand.Int63()
 	for {
-		s.seq++
-		s.px.Start(s.seq, Paxage{ops, xid})
-		pkg := s.getOp(s.seq)
+		s.Seq++
+		s.px.Start(s.Seq, Paxage{ops, xid})
+		pkg := s.getOp(s.Seq)
 
 		if pkg.Xid == xid {
 			break
@@ -172,23 +184,23 @@ func (s *Server) Init(arg InitArg, reply *InitReply) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	if s.userData[arg.Client] == nil {
+	if s.UserDoc[arg.Client] == nil {
 
 		// new user
-		if len(s.doc.Colors) >= MAXUSERS {
-			reply.Err = "Full"
-			return nil
-		}
+		// if len(s.Doc.Colors) >= MAXUSERS {
+		// 	reply.Err = "Full"
+		// 	return nil
+		// }
 
 		s.handleOp([]Op{Op{Type: Init, View: arg.Xid, Client: arg.Client, Seq: 1}})
 		reply.Err = "Redo"
-	} else if s.userData[arg.Client].xid != arg.Xid {
+	} else if s.UserDoc[arg.Client].Xid != arg.Xid {
 		// old user new session
-		s.handleOp([]Op{Op{Type: Init, View: arg.Xid, Client: arg.Client, Seq: s.userSeqs[arg.Client] + 1}})
+		s.handleOp([]Op{Op{Type: Init, View: arg.Xid, Client: arg.Client, Seq: s.UserSeqs[arg.Client] + 1}})
 		reply.Err = "Redo"
 	} else {
 		// marshal document and send back
-		buf, err := docToBytes(s.userData[arg.Client].doc)
+		buf, err := docToBytes(s.UserDoc[arg.Client].Doc)
 		if err != nil {
 			log.Println("Couldn't send document", err)
 			reply.Err = "Encode"
@@ -206,16 +218,16 @@ func (s *Server) Query(arg QueryArg, reply *QueryReply) error {
 	idx := arg.View
 
 	// log.Println("Sending query...", s.view-idx)
-	if idx > s.commitpoint {
+	if idx > s.CommitPoint {
 		reply.Err = "BAD"
 		return nil
 	}
 
 	s.mu.Lock()
-	if s.userViews[arg.Client] < arg.View {
-		s.userViews[arg.Client] = arg.View
+	if s.UserViews[arg.Client] < arg.View {
+		s.UserViews[arg.Client] = arg.View
 	}
-	buf, err := json.Marshal(s.commitLog[idx-s.discardpoint : s.commitpoint-s.discardpoint])
+	buf, err := json.Marshal(s.CommitLog[idx-s.DiscardPoint : s.CommitPoint-s.DiscardPoint])
 	s.mu.Unlock()
 
 	if err != nil {
@@ -242,7 +254,7 @@ func (s *Server) Handle(arg OpArg, reply *OpReply) error {
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if ops[0].Seq > s.doc.Seqs[ops[0].Client]+1 {
+	if ops[0].Seq > s.Doc.Seqs[ops[0].Client]+1 {
 		// sequence number larger than expected
 		reply.Err = "High"
 		return nil
@@ -264,7 +276,7 @@ func (s *Server) Handle(arg OpArg, reply *OpReply) error {
 		}
 	}
 
-	if ops[len(ops)-1].Seq > s.doc.Seqs[ops[0].Client] {
+	if ops[len(ops)-1].Seq > s.Doc.Seqs[ops[0].Client] {
 		// there is a new op
 		s.handleOp(ops)
 	}
@@ -291,43 +303,43 @@ func (s *Server) update() {
 
 		// append to commit log
 		for _, c := range ops {
-			if c.Seq == s.userSeqs[c.Client]+1 {
-				s.commitLog = append(s.commitLog, c)
-				s.commitpoint++
-				s.userSeqs[c.Client]++
+			if c.Seq == s.UserSeqs[c.Client]+1 {
+				s.CommitLog = append(s.CommitLog, c)
+				s.CommitPoint++
+				s.UserSeqs[c.Client]++
 
-				s.doc.apply(c, false)
-				s.doc.Seqs[c.Client]++
+				s.Doc.apply(c, false)
+				s.Doc.Seqs[c.Client]++
 
 				// TODO: handle Inits
 				if c.Type == Init {
-					if s.userData[c.Client] == nil || s.userData[c.Client].xid != c.View {
-						s.userData[c.Client] = &UserData{doc: s.doc.dup(), xid: c.View}
-						s.userData[c.Client].doc.View++
-						s.userViews[c.Client] = s.userData[c.Client].doc.View // correct?
+					if s.UserDoc[c.Client] == nil || s.UserDoc[c.Client].Xid != c.View {
+						s.UserDoc[c.Client] = &UserData{Doc: s.Doc.dup(), Xid: c.View}
+						s.UserDoc[c.Client].Doc.View++
+						s.UserViews[c.Client] = s.UserDoc[c.Client].Doc.View // correct?
 					}
 				}
 
-				s.doc.View++
+				s.Doc.View++
 			}
-			if s.userViews[c.Client] < c.View && c.Type != Init {
-				s.userViews[c.Client] = c.View
+			if s.UserViews[c.Client] < c.View && c.Type != Init {
+				s.UserViews[c.Client] = c.View
 			}
 		}
 
 		s.px.Done(seq)
 
 		var min uint32
-		for _, v := range s.userViews {
+		for _, v := range s.UserViews {
 			if min == 0 {
 				min = v
 			} else if min > v {
 				min = v
 			}
 		}
-		if s.discardpoint < min {
-			s.commitLog = s.commitLog[min-s.discardpoint:]
-			s.discardpoint = min
+		if s.DiscardPoint < min {
+			s.CommitLog = s.CommitLog[min-s.DiscardPoint:]
+			s.DiscardPoint = min
 		}
 		s.mu.Unlock()
 		time.Sleep(updateDelay)
@@ -352,7 +364,6 @@ func (s *Server) Start() {
 	gob.Register([]Op{})
 	gob.Register(Paxage{})
 
-	s.px = makePaxos(s.servers, s.me)
 	rpcs.Register(s.px)
 
 	log.Println("Listening on", s.listener.Addr().String())
