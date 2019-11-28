@@ -183,53 +183,50 @@ func (gp *gopad) push() {
 // pulls commited operations from server
 func (gp *gopad) pull(testing bool) {
 	for {
-		ok := false
+		var reply QueryReply
+		ok := call(gp.srv, "Server.Query", QueryArg{View: gp.doc.View, Client: gp.id}, &reply, false)
 
-		for !ok {
-			var reply QueryReply
-			ok = call(gp.srv, "Server.Query", QueryArg{View: gp.doc.View, Client: gp.id}, &reply, false)
+		if ok && reply.Err == "OK" {
+			var commits []Op
+			json.Unmarshal(reply.Data, &commits)
 
-			if ok && reply.Err == "OK" {
-				var commits []Op
-				json.Unmarshal(reply.Data, &commits)
+			if len(commits) > 0 {
+				// apply commited ops
+				gp.mu.Lock()
 
-				if len(commits) > 0 {
-					// apply commited ops
-					gp.mu.Lock()
+				oldPoint := gp.doc.Seqs[gp.id]
+				gp.applyCommits(commits, 0, 0)
 
-					oldPoint := gp.doc.Seqs[gp.id]
-					gp.applyCommits(commits)
-
-					// cut off commiteds
-					if gp.doc.Seqs[gp.id] > oldPoint {
-						gp.selfOps = gp.selfOps[gp.doc.Seqs[gp.id]-oldPoint:]
-					}
-
-					gp.tempdoc = *gp.doc.dup()
-					for k, v := range gp.doc.UserPos {
-						x := *v
-						gp.tempdoc.UserPos[k] = &x
-					}
-					// apply ops not yet commited
-					for _, op := range gp.selfOps {
-						gp.tempdoc.apply(op, true)
-					}
-					gp.mu.Unlock()
-
-					if !testing {
-						gp.refreshScreen()
-					}
+				// cut off commiteds
+				if gp.doc.Seqs[gp.id] > oldPoint {
+					gp.selfOps = gp.selfOps[gp.doc.Seqs[gp.id]-oldPoint:]
 				}
-			} else {
-				time.Sleep(pullDelay)
+
+				gp.tempdoc = *gp.doc.dup()
+				for k, v := range gp.doc.UserPos {
+					x := *v
+					gp.tempdoc.UserPos[k] = &x
+				}
+				// apply ops not yet commited
+				for _, op := range gp.selfOps {
+					gp.tempdoc.apply(op, true)
+				}
+				gp.mu.Unlock()
+
+				if !testing {
+					gp.refreshScreen()
+				}
 			}
+		} else {
+			time.Sleep(pullDelay)
 		}
-		time.Sleep(pullDelay)
 	}
 }
 
-// apply ops from commit log
-func (gp *gopad) applyCommits(commits []Op) {
+// apply ops from commit log and returns true if a certain Init op was found
+func (gp *gopad) applyCommits(commits []Op, xid uint32, ck int) bool {
+	res := false
+
 	for _, op := range commits {
 		// gp.status = fmt.Sprintf("%d %v", gp.doc.Seqs[op.Client], commits)
 		if op.Seq == gp.doc.Seqs[op.Client]+1 {
@@ -237,11 +234,82 @@ func (gp *gopad) applyCommits(commits []Op) {
 			gp.doc.apply(op, false)
 			gp.doc.Seqs[op.Client]++
 
-			if op.Type == Init && gp.doc.Seqs[op.Client] == 0 {
-				gp.numusers++
+			if op.Type == Init {
+				if gp.doc.Seqs[op.Client] == 0 {
+					gp.numusers++
+				}
+
+				if op.View == xid && op.Client == ck {
+					res = true
+				}
 			}
 		}
 		gp.doc.View++
+	}
+
+	return res
+}
+
+/*** file i/o ***/
+
+// get file from server
+func (gp *gopad) editorOpen(server string, view int, user int) {
+	var reply InitReply
+	xid := rand.Uint32()
+	for {
+		ok := call(server, "Server.Init", InitArg{Client: user, Xid: xid}, &reply, false)
+		if ok {
+			if reply.Err == "OK" {
+				err := bytesToDoc(reply.Doc, &gp.doc)
+				if err != nil {
+					log.Fatal("Couldn't decode document")
+				}
+
+				// TODO: process updates until relevant init
+				found := false
+				for !found {
+					var reply QueryReply
+					ok := call(gp.srv, "Server.Query", QueryArg{View: gp.doc.View, Client: gp.id}, &reply, false)
+
+					if ok && reply.Err == "OK" {
+						var commits []Op
+						json.Unmarshal(reply.Data, &commits)
+
+						if len(commits) > 0 {
+							// apply commited ops
+							gp.mu.Lock()
+
+							oldPoint := gp.doc.Seqs[gp.id]
+							found = gp.applyCommits(commits, xid, gp.id)
+
+							// cut off commiteds
+							if gp.doc.Seqs[gp.id] > oldPoint {
+								gp.selfOps = gp.selfOps[gp.doc.Seqs[gp.id]-oldPoint:]
+							}
+							gp.mu.Unlock()
+						}
+					} else {
+						time.Sleep(pullDelay)
+					}
+
+				}
+
+				gp.tempdoc = *gp.doc.dup()
+				gp.opNum = gp.doc.Seqs[user]
+
+				// // update positions
+				for user, pos := range gp.doc.UserPos {
+					gp.tempRUsers[user] = editorRowCxToRx(&gp.tempdoc.Rows[pos.Y], pos.X)
+				}
+				gp.numusers = len(gp.doc.UserPos)
+				break
+			} else {
+				time.Sleep(time.Second)
+			}
+
+		} else {
+			log.Fatal("Not ok call")
+		}
 	}
 }
 
@@ -414,41 +482,6 @@ func (gp *gopad) refreshScreen() {
 	termbox.SetCursor(gp.tempRUsers[gp.id]-gp.coloff+1, gp.tempdoc.UserPos[gp.id].Y-gp.rowoff)
 	termbox.Flush()
 	gp.mu.Unlock()
-}
-
-/*** file i/o ***/
-
-// get file from server
-func (gp *gopad) editorOpen(server string, view int, user int) {
-	var reply InitReply
-	xid := rand.Uint32()
-	for {
-		ok := call(server, "Server.Init", InitArg{Client: user, Xid: xid}, &reply, false)
-		if ok {
-			if reply.Err == "OK" {
-				// TODO: update for reconnection
-				err := bytesToDoc(reply.Doc, &gp.doc)
-				if err != nil {
-					log.Fatal("Couldn't decode document")
-				}
-
-				gp.tempdoc = *gp.doc.dup()
-				gp.opNum = gp.doc.Seqs[user]
-
-				// // update positions
-				for user, pos := range gp.doc.UserPos {
-					gp.tempRUsers[user] = editorRowCxToRx(&gp.tempdoc.Rows[pos.Y], pos.X)
-				}
-				gp.numusers = len(gp.doc.UserPos)
-				break
-			} else {
-				time.Sleep(time.Second)
-			}
-
-		} else {
-			log.Fatal("Not ok call")
-		}
-	}
 }
 
 /*** init ***/

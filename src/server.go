@@ -36,13 +36,13 @@ type Server struct {
 	port    int
 
 	// data
-	Doc          *Doc
+	Doc          Doc
 	CommitLog    []Op
 	UserSeqs     map[int]uint32 // last reported sequence by user
 	UserViews    map[int]uint32 // last reported view number by user
 	CommitPoint  uint32         // the upper bound of our commit log (in absolute terms)
 	DiscardPoint uint32         // ops below this have been discarded
-	UserDoc      map[int]*UserData
+	UserSession  map[int]uint32 // xid of current user session
 	Seq          int
 
 	// handler  map[string]HandleFunc
@@ -94,7 +94,6 @@ func (s *Server) Recover(servers []string) {
 }
 
 func NewServer(fname string, reboot bool, port int, servers []string, me int) *Server {
-	var doc Doc
 	s := Server{
 		reboot:  reboot,
 		servers: servers,
@@ -107,10 +106,10 @@ func NewServer(fname string, reboot bool, port int, servers []string, me int) *S
 		s.UserSeqs = make(map[int]uint32)
 		s.UserViews = make(map[int]uint32)
 		s.CommitLog = make([]Op, 0)
-		s.UserDoc = make(map[int]*UserData)
+		s.UserSession = make(map[int]uint32)
 
 		// new document, so start fresh
-		doc = Doc{
+		s.Doc = Doc{
 			Id:      rand.Uint32(),
 			Seqs:    make(map[int]uint32),
 			UserPos: make(map[int]*Pos),
@@ -125,7 +124,7 @@ func NewServer(fname string, reboot bool, port int, servers []string, me int) *S
 			defer file.Close()
 			scanner := bufio.NewScanner(file)
 			for scanner.Scan() {
-				doc.Rows = append(doc.Rows,
+				s.Doc.Rows = append(s.Doc.Rows,
 					erow{
 						Chars:  scanner.Text(),
 						Temp:   make([]bool, len(scanner.Text())),
@@ -134,15 +133,13 @@ func NewServer(fname string, reboot bool, port int, servers []string, me int) *S
 			}
 		} else {
 			// empty first row
-			doc.Rows = append(doc.Rows,
+			s.Doc.Rows = append(s.Doc.Rows,
 				erow{
 					Chars:  "",
 					Temp:   make([]bool, 0),
 					Author: make([]int, 0),
 				})
 		}
-
-		s.Doc = &doc
 	} else {
 		s.Recover(servers)
 	}
@@ -184,31 +181,29 @@ func (s *Server) Init(arg InitArg, reply *InitReply) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	if s.UserDoc[arg.Client] == nil {
+	if xid, ok := s.UserSession[arg.Client]; !ok {
 
 		// new user
-		// if len(s.Doc.Colors) >= MAXUSERS {
-		// 	reply.Err = "Full"
-		// 	return nil
-		// }
-
-		s.handleOp([]Op{Op{Type: Init, View: arg.Xid, Client: arg.Client, Seq: 1}})
-		reply.Err = "Redo"
-	} else if s.UserDoc[arg.Client].Xid != arg.Xid {
-		// old user new session
-		s.handleOp([]Op{Op{Type: Init, View: arg.Xid, Client: arg.Client, Seq: s.UserSeqs[arg.Client] + 1}})
-		reply.Err = "Redo"
-	} else {
-		// marshal document and send back
-		buf, err := docToBytes(s.UserDoc[arg.Client].Doc)
-		if err != nil {
-			log.Println("Couldn't send document", err)
-			reply.Err = "Encode"
+		if len(s.Doc.Colors) >= MAXUSERS {
+			reply.Err = "Full"
 			return nil
 		}
-		reply.Doc = buf
-		reply.Err = "OK"
+
+		s.handleOp([]Op{Op{Type: Init, View: arg.Xid, Client: arg.Client, Seq: 1}})
+	} else if xid != arg.Xid {
+		// old user new session
+		s.handleOp([]Op{Op{Type: Init, View: arg.Xid, Client: arg.Client, Seq: s.UserSeqs[arg.Client] + 1}})
 	}
+
+	// marshal document and send back
+	buf, err := docToBytes(&s.Doc)
+	if err != nil {
+		log.Println("Couldn't send document", err)
+		reply.Err = "Encode"
+		return nil
+	}
+	reply.Doc = buf
+	reply.Err = "OK"
 
 	return nil
 }
@@ -310,17 +305,13 @@ func (s *Server) update() {
 
 				s.Doc.apply(c, false)
 				s.Doc.Seqs[c.Client]++
+				s.Doc.View++
 
-				// TODO: handle Inits
 				if c.Type == Init {
-					if s.UserDoc[c.Client] == nil || s.UserDoc[c.Client].Xid != c.View {
-						s.UserDoc[c.Client] = &UserData{Doc: s.Doc.dup(), Xid: c.View}
-						s.UserDoc[c.Client].Doc.View++
-						s.UserViews[c.Client] = s.UserDoc[c.Client].Doc.View // correct?
+					if xid, ok := s.UserSession[c.Client]; !ok || xid != c.View {
+						s.UserViews[c.Client] = s.Doc.View // correct?
 					}
 				}
-
-				s.Doc.View++
 			}
 			if s.UserViews[c.Client] < c.View && c.Type != Init {
 				s.UserViews[c.Client] = c.View
