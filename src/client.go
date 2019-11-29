@@ -39,6 +39,7 @@ type gopad struct {
 
 	selfOps []Op
 	opNum   uint32
+	session uint32
 
 	tempRUsers map[int]int // renderX for each tempPos
 	numusers   int
@@ -49,8 +50,9 @@ func StartClient(user int, server string, port int, testing bool) {
 	gp.id = user
 	gp.srv = server + ":" + strconv.Itoa(port)
 	gp.tempRUsers = make(map[int]int)
+	gp.session = rand.Uint32()
 
-	gp.editorOpen(gp.srv, 0, user)
+	gp.editorOpen(gp.srv)
 
 	err := termbox.Init()
 	if err != nil {
@@ -63,6 +65,7 @@ func StartClient(user int, server string, port int, testing bool) {
 	}
 
 	gp.initEditor()
+	log.Println("HERE")
 
 	go gp.push()
 	go gp.pull(testing)
@@ -135,12 +138,15 @@ mainloop:
 }
 
 func (gp *gopad) logOp(ops []Op) {
+	gp.mu.Lock()
 	for _, op := range ops {
 		gp.opNum++
 		op.Seq = gp.opNum
+		op.Session = gp.session
 		gp.selfOps = append(gp.selfOps, op)
 		gp.tempdoc.apply(op, true)
 	}
+	gp.mu.Unlock()
 }
 
 // push commits to server
@@ -163,17 +169,13 @@ func (gp *gopad) push() {
 		}
 		gp.mu.Unlock()
 
-		ok := false
-		for !ok {
+		done := false
+		for !done {
 			var reply OpReply
-			ok = call(gp.srv, "Server.Handle", OpArg{Data: buf, Xid: rand.Int63()}, &reply, false)
-			if !ok {
-				// if reply.Err == "OK" {
-				// cut off pushed ops
-				// gp.mu.Lock()
-				// gp.selfOps = gp.selfOps[l:]
-				// gp.mu.Unlock()
-				// }
+			ok := call(gp.srv, "Server.Handle", OpArg{Data: buf, Xid: rand.Int63()}, &reply, false)
+
+			if ok && reply.Err == "OK" {
+				done = true
 			}
 		}
 		time.Sleep(pushDelay)
@@ -184,6 +186,7 @@ func (gp *gopad) push() {
 func (gp *gopad) pull(testing bool) {
 	for {
 		var reply QueryReply
+		gp.mu.Lock()
 		ok := call(gp.srv, "Server.Query", QueryArg{View: gp.doc.View, Client: gp.id}, &reply, false)
 
 		if ok && reply.Err == "OK" {
@@ -192,14 +195,13 @@ func (gp *gopad) pull(testing bool) {
 
 			if len(commits) > 0 {
 				// apply commited ops
-				gp.mu.Lock()
 
-				oldPoint := gp.doc.Seqs[gp.id]
+				oldPoint := gp.doc.UserSeqs[gp.id]
 				gp.applyCommits(commits, 0, 0)
 
 				// cut off commiteds
-				if gp.doc.Seqs[gp.id] > oldPoint {
-					gp.selfOps = gp.selfOps[gp.doc.Seqs[gp.id]-oldPoint:]
+				if gp.doc.UserSeqs[gp.id] > oldPoint {
+					gp.selfOps = gp.selfOps[gp.doc.UserSeqs[gp.id]-oldPoint:]
 				}
 
 				gp.tempdoc = *gp.doc.dup()
@@ -211,40 +213,41 @@ func (gp *gopad) pull(testing bool) {
 				for _, op := range gp.selfOps {
 					gp.tempdoc.apply(op, true)
 				}
-				gp.mu.Unlock()
 
+				gp.mu.Unlock()
 				if !testing {
 					gp.refreshScreen()
 				}
 			}
 		} else {
+			gp.mu.Unlock()
 			time.Sleep(pullDelay)
 		}
 	}
 }
 
-// apply ops from commit log and returns true if a certain Init op was found
-func (gp *gopad) applyCommits(commits []Op, xid uint32, ck int) bool {
+// apply ops and returns true if a certain Init op was found
+func (gp *gopad) applyCommits(commits []Op, session uint32, ck int) bool {
 	res := false
 
 	for _, op := range commits {
 		// gp.status = fmt.Sprintf("%d %v", gp.doc.Seqs[op.Client], commits)
-		if op.Seq == gp.doc.Seqs[op.Client]+1 {
+		if op.Seq == gp.doc.UserSeqs[op.Client]+1 {
 			// apply op and update commitpoint
 			gp.doc.apply(op, false)
-			gp.doc.Seqs[op.Client]++
+			gp.doc.View++
+			gp.doc.UserSeqs[op.Client]++
 
 			if op.Type == Init {
-				if gp.doc.Seqs[op.Client] == 0 {
+				if gp.doc.UserSeqs[op.Client] == 0 {
 					gp.numusers++
 				}
 
-				if op.View == xid && op.Client == ck {
+				if op.Session == session && op.Client == ck {
 					res = true
 				}
 			}
 		}
-		gp.doc.View++
 	}
 
 	return res
@@ -253,11 +256,10 @@ func (gp *gopad) applyCommits(commits []Op, xid uint32, ck int) bool {
 /*** file i/o ***/
 
 // get file from server
-func (gp *gopad) editorOpen(server string, view int, user int) {
+func (gp *gopad) editorOpen(server string) {
 	var reply InitReply
-	xid := rand.Uint32()
 	for {
-		ok := call(server, "Server.Init", InitArg{Client: user, Xid: xid}, &reply, false)
+		ok := call(server, "Server.Init", InitArg{Client: gp.id, Session: gp.session}, &reply, false)
 		if ok {
 			if reply.Err == "OK" {
 				err := bytesToDoc(reply.Doc, &gp.doc)
@@ -265,43 +267,33 @@ func (gp *gopad) editorOpen(server string, view int, user int) {
 					log.Fatal("Couldn't decode document")
 				}
 
-				// TODO: process updates until relevant init
-				found := false
-				for !found {
+				// process updates until relevant Init
+				done := false
+				for !done {
 					var reply QueryReply
 					ok := call(gp.srv, "Server.Query", QueryArg{View: gp.doc.View, Client: gp.id}, &reply, false)
 
 					if ok && reply.Err == "OK" {
+						// apply commited ops
 						var commits []Op
 						json.Unmarshal(reply.Data, &commits)
 
 						if len(commits) > 0 {
-							// apply commited ops
-							gp.mu.Lock()
-
-							oldPoint := gp.doc.Seqs[gp.id]
-							found = gp.applyCommits(commits, xid, gp.id)
-
-							// cut off commiteds
-							if gp.doc.Seqs[gp.id] > oldPoint {
-								gp.selfOps = gp.selfOps[gp.doc.Seqs[gp.id]-oldPoint:]
-							}
-							gp.mu.Unlock()
+							done = gp.applyCommits(commits, gp.session, gp.id)
 						}
 					} else {
 						time.Sleep(pullDelay)
 					}
-
 				}
 
 				gp.tempdoc = *gp.doc.dup()
-				gp.opNum = gp.doc.Seqs[user]
+				gp.opNum = gp.doc.UserSeqs[gp.id]
+				gp.numusers = len(gp.doc.UserPos)
 
-				// // update positions
+				// update positions
 				for user, pos := range gp.doc.UserPos {
 					gp.tempRUsers[user] = editorRowCxToRx(&gp.tempdoc.Rows[pos.Y], pos.X)
 				}
-				gp.numusers = len(gp.doc.UserPos)
 				break
 			} else {
 				time.Sleep(time.Second)

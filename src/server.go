@@ -19,9 +19,9 @@ var (
 	updateDelay = 250 * time.Millisecond
 )
 
-type UserData struct {
-	Doc *Doc
-	Xid uint32
+type ViewSeq struct {
+	View uint32
+	Seq  int
 }
 
 type Server struct {
@@ -38,12 +38,13 @@ type Server struct {
 	// data
 	Doc          Doc
 	CommitLog    []Op
-	UserSeqs     map[int]uint32 // last reported sequence by user
 	UserViews    map[int]uint32 // last reported view number by user
 	CommitPoint  uint32         // the upper bound of our commit log (in absolute terms)
 	DiscardPoint uint32         // ops below this have been discarded
 	UserSession  map[int]uint32 // xid of current user session
-	Seq          int
+	StartSeq     int            // seq number to Start paxos
+	QuerySeq     int            // seq number to Query paxos
+	ViewSeqs     []ViewSeq      // Paxos seqs -> Doc Views
 
 	// handler  map[string]HandleFunc
 	// m sync.RWMutex
@@ -90,7 +91,7 @@ func (s *Server) Recover(servers []string) {
 		}
 	}
 
-	s.Seq = tmp.Seq
+	s.StartSeq = tmp.StartSeq
 }
 
 func NewServer(fname string, reboot bool, port int, servers []string, me int) *Server {
@@ -103,17 +104,16 @@ func NewServer(fname string, reboot bool, port int, servers []string, me int) *S
 	}
 
 	if !reboot {
-		s.UserSeqs = make(map[int]uint32)
 		s.UserViews = make(map[int]uint32)
 		s.CommitLog = make([]Op, 0)
 		s.UserSession = make(map[int]uint32)
+		s.ViewSeqs = make([]ViewSeq, 0)
 
 		// new document, so start fresh
 		s.Doc = Doc{
-			Id:      rand.Uint32(),
-			Seqs:    make(map[int]uint32),
-			UserPos: make(map[int]*Pos),
-			Colors:  make(map[int]int),
+			UserSeqs: make(map[int]uint32),
+			UserPos:  make(map[int]*Pos),
+			Colors:   make(map[int]int),
 		}
 
 		if fname != "" {
@@ -165,9 +165,9 @@ func (s *Server) getOp(seq int) Paxage {
 func (s *Server) handleOp(ops []Op) {
 	xid := rand.Int63()
 	for {
-		s.Seq++
-		s.px.Start(s.Seq, Paxage{ops, xid})
-		pkg := s.getOp(s.Seq)
+		s.px.Start(s.StartSeq, Paxage{ops, xid})
+		pkg := s.getOp(s.StartSeq)
+		s.StartSeq++
 
 		if pkg.Xid == xid {
 			break
@@ -181,29 +181,29 @@ func (s *Server) Init(arg InitArg, reply *InitReply) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	if xid, ok := s.UserSession[arg.Client]; !ok {
+	session, ok := s.UserSession[arg.Client]
 
-		// new user
-		if len(s.Doc.Colors) >= MAXUSERS {
-			reply.Err = "Full"
-			return nil
-		}
-
-		s.handleOp([]Op{Op{Type: Init, View: arg.Xid, Client: arg.Client, Seq: 1}})
-	} else if xid != arg.Xid {
-		// old user new session
-		s.handleOp([]Op{Op{Type: Init, View: arg.Xid, Client: arg.Client, Seq: s.UserSeqs[arg.Client] + 1}})
-	}
-
-	// marshal document and send back
-	buf, err := docToBytes(&s.Doc)
-	if err != nil {
-		log.Println("Couldn't send document", err)
-		reply.Err = "Encode"
+	if !ok && len(s.Doc.Colors) >= MAXUSERS {
+		reply.Err = "Full"
 		return nil
 	}
-	reply.Doc = buf
-	reply.Err = "OK"
+
+	if session != arg.Session {
+		// new session
+		s.handleOp([]Op{Op{Type: Init, Session: arg.Session, Client: arg.Client, Seq: s.Doc.UserSeqs[arg.Client] + 1}})
+
+		// marshal document and send back
+		buf, err := docToBytes(&s.Doc)
+		if err != nil {
+			log.Println("Couldn't send document", err)
+			reply.Err = "Encode"
+			return nil
+		}
+		reply.Doc = buf
+		reply.Err = "OK"
+	} else {
+		reply.Err = "Duplicate"
+	}
 
 	return nil
 }
@@ -249,7 +249,7 @@ func (s *Server) Handle(arg OpArg, reply *OpReply) error {
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if ops[0].Seq > s.Doc.Seqs[ops[0].Client]+1 {
+	if ops[0].Seq > s.Doc.UserSeqs[ops[0].Client]+1 {
 		// sequence number larger than expected
 		reply.Err = "High"
 		return nil
@@ -271,7 +271,7 @@ func (s *Server) Handle(arg OpArg, reply *OpReply) error {
 		}
 	}
 
-	if ops[len(ops)-1].Seq > s.Doc.Seqs[ops[0].Client] {
+	if ops[len(ops)-1].Seq > s.Doc.UserSeqs[ops[0].Client] {
 		// there is a new op
 		s.handleOp(ops)
 	}
@@ -282,43 +282,43 @@ func (s *Server) Handle(arg OpArg, reply *OpReply) error {
 
 // apply log
 func (s *Server) update() {
-	seq := 1
 	var ops []Op
 	for {
-		status, val := s.px.status(seq)
+		status, val := s.px.status(s.QuerySeq)
 		if status == Pending {
 			time.Sleep(updateDelay)
 			continue
 		}
-		seq++
 
 		// get package from paxos
 		ops = (val.(Paxage)).Payload.([]Op)
 		s.mu.Lock()
 
+		var viewMax uint32
+
 		// append to commit log
 		for _, c := range ops {
-			if c.Seq == s.UserSeqs[c.Client]+1 {
+			if c.Seq == s.Doc.UserSeqs[c.Client]+1 {
 				s.CommitLog = append(s.CommitLog, c)
 				s.CommitPoint++
-				s.UserSeqs[c.Client]++
 
 				s.Doc.apply(c, false)
-				s.Doc.Seqs[c.Client]++
+				s.Doc.UserSeqs[c.Client]++
 				s.Doc.View++
-
-				if c.Type == Init {
-					if xid, ok := s.UserSession[c.Client]; !ok || xid != c.View {
-						s.UserViews[c.Client] = s.Doc.View // correct?
-					}
-				}
 			}
 			if s.UserViews[c.Client] < c.View && c.Type != Init {
+				// only update UserView if not Init
 				s.UserViews[c.Client] = c.View
+			}
+			if c.View > viewMax {
+				viewMax = c.View
 			}
 		}
 
-		s.px.Done(seq)
+		s.ViewSeqs = append(s.ViewSeqs, ViewSeq{View: viewMax, Seq: s.QuerySeq})
+		s.QuerySeq++
+
+		s.processDone()
 
 		var min uint32
 		for _, v := range s.UserViews {
@@ -335,6 +335,9 @@ func (s *Server) update() {
 		s.mu.Unlock()
 		time.Sleep(updateDelay)
 	}
+}
+
+func (s *Server) processDone() {
 }
 
 func (s *Server) Start() {

@@ -41,24 +41,23 @@ type Pos struct {
 }
 
 type Doc struct {
-	Rows    []erow
-	View    uint32
-	Colors  map[int]int
-	Users   []string     // starting username (not implemented)
-	UserPos map[int]*Pos // position of users in document
-	Seqs    map[int]uint32
-	Id      uint32
+	Rows     []erow
+	View     uint32
+	Colors   map[int]int
+	Users    []string     // starting username (not implemented)
+	UserPos  map[int]*Pos // position of users in document
+	UserSeqs map[int]uint32
 }
 
 // transport version of doc
 type Doc_t struct {
-	Users   []string
-	Rows    []erow
-	View    uint32
-	Colors  map[int]int
-	UserPos map[int]Pos // position of users in document
-	Seqs    map[int]uint32
-	Id      uint32
+	Users    []string
+	Rows     []erow
+	View     uint32
+	Colors   map[int]int
+	UserPos  map[int]Pos // position of users in document
+	UserSeqs map[int]uint32
+	Id       uint32
 }
 
 type Op struct {
@@ -66,14 +65,15 @@ type Op struct {
 	Data rune
 	Move termbox.Key
 	// X, Y   int
-	View   uint32 // last document view seen by user
-	Seq    uint32 // sequential number for each user
-	Client int
+	View    uint32 // last document view seen by user
+	Seq     uint32 // sequential number for each user
+	Client  int
+	Session uint32
 }
 
 type InitArg struct {
-	Client int
-	Xid    uint32
+	Client  int
+	Session uint32
 }
 
 type QueryArg struct {
@@ -170,7 +170,7 @@ func (doc *Doc) dup() *Doc {
 		d.Rows[i] = *doc.Rows[i].copy()
 	}
 
-	d.Seqs = make(map[int]uint32)
+	d.UserSeqs = make(map[int]uint32)
 	d.Users = make([]string, len(doc.Users))
 	d.Colors = make(map[int]int)
 
@@ -180,8 +180,8 @@ func (doc *Doc) dup() *Doc {
 		d.Colors[k] = v
 	}
 
-	for k, v := range doc.Seqs {
-		d.Seqs[k] = v
+	for k, v := range doc.UserSeqs {
+		d.UserSeqs[k] = v
 	}
 
 	d.UserPos = make(map[int]*Pos)
@@ -205,7 +205,7 @@ func docToBytes(doc *Doc) ([]byte, error) {
 	for k, v := range doc.UserPos {
 		d.UserPos[k] = *v
 	}
-	d.Seqs = make(map[int]uint32)
+	d.UserSeqs = make(map[int]uint32)
 	d.Users = make([]string, len(doc.Users))
 	d.Colors = make(map[int]int)
 
@@ -215,8 +215,8 @@ func docToBytes(doc *Doc) ([]byte, error) {
 		d.Colors[k] = v
 	}
 
-	for k, v := range doc.Seqs {
-		d.Seqs[k] = v
+	for k, v := range doc.UserSeqs {
+		d.UserSeqs[k] = v
 	}
 
 	var b bytes.Buffer
@@ -249,7 +249,7 @@ func bytesToDoc(b []byte, d *Doc) error {
 		d.Rows[i] = *doc.Rows[i].copy()
 	}
 
-	d.Seqs = doc.Seqs
+	d.UserSeqs = doc.UserSeqs
 	d.Users = doc.Users
 
 	d.UserPos = make(map[int]*Pos)
@@ -273,7 +273,7 @@ func (doc *Doc) apply(op Op, temp bool) {
 	case Insert:
 		editorInsertRune(doc, op.Client, op.Data, temp)
 	case Init:
-		if doc.Seqs[op.Client] == 0 {
+		if doc.UserSeqs[op.Client] == 0 {
 			doc.Colors[op.Client] = len(doc.Colors) + 1
 		}
 		doc.UserPos[op.Client] = &Pos{}
