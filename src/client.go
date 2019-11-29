@@ -65,7 +65,6 @@ func StartClient(user int, server string, port int, testing bool) {
 	}
 
 	gp.initEditor()
-	log.Println("HERE")
 
 	go gp.push()
 	go gp.pull(testing)
@@ -73,7 +72,9 @@ func StartClient(user int, server string, port int, testing bool) {
 mainloop:
 	for {
 		gp.refreshScreen()
-		switch ev := termbox.PollEvent(); ev.Type {
+		ev := termbox.PollEvent()
+
+		switch ev.Type {
 		case termbox.EventKey:
 			gp.mu.Lock()
 			switch ev.Key {
@@ -138,7 +139,6 @@ mainloop:
 }
 
 func (gp *gopad) logOp(ops []Op) {
-	gp.mu.Lock()
 	for _, op := range ops {
 		gp.opNum++
 		op.Seq = gp.opNum
@@ -146,7 +146,6 @@ func (gp *gopad) logOp(ops []Op) {
 		gp.selfOps = append(gp.selfOps, op)
 		gp.tempdoc.apply(op, true)
 	}
-	gp.mu.Unlock()
 }
 
 // push commits to server
@@ -218,6 +217,9 @@ func (gp *gopad) pull(testing bool) {
 				if !testing {
 					gp.refreshScreen()
 				}
+			} else {
+				gp.mu.Unlock()
+				time.Sleep(pullDelay)
 			}
 		} else {
 			gp.mu.Unlock()
@@ -236,7 +238,6 @@ func (gp *gopad) applyCommits(commits []Op, session uint32, ck int) bool {
 			// apply op and update commitpoint
 			gp.doc.apply(op, false)
 			gp.doc.View++
-			gp.doc.UserSeqs[op.Client]++
 
 			if op.Type == Init {
 				if gp.doc.UserSeqs[op.Client] == 0 {
@@ -247,6 +248,7 @@ func (gp *gopad) applyCommits(commits []Op, session uint32, ck int) bool {
 					res = true
 				}
 			}
+			gp.doc.UserSeqs[op.Client]++
 		}
 	}
 
