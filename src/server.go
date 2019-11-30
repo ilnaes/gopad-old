@@ -36,12 +36,12 @@ type Server struct {
 	port    int
 
 	// data
+	// Doc.UserSession  map[int]uint32 // xid of current user session
 	Doc          Doc
 	CommitLog    []Op
 	UserViews    map[int]uint32 // last reported view number by user
 	CommitPoint  uint32         // the upper bound of our commit log (in absolute terms)
 	DiscardPoint uint32         // ops below this have been discarded
-	UserSession  map[int]uint32 // xid of current user session
 	StartSeq     int            // seq number to Start paxos
 	QuerySeq     int            // seq number to Query paxos
 	ViewSeqs     []ViewSeq      // Paxos seqs -> Doc Views
@@ -106,14 +106,14 @@ func NewServer(fname string, reboot bool, port int, servers []string, me int) *S
 	if !reboot {
 		s.UserViews = make(map[int]uint32)
 		s.CommitLog = make([]Op, 0)
-		s.UserSession = make(map[int]uint32)
 		s.ViewSeqs = make([]ViewSeq, 0)
 
 		// new document, so start fresh
 		s.Doc = Doc{
-			UserSeqs: make(map[int]uint32),
-			UserPos:  make(map[int]*Pos),
-			Colors:   make(map[int]int),
+			UserSeqs:    make(map[int]uint32),
+			UserPos:     make(map[int]*Pos),
+			Colors:      make(map[int]int),
+			UserSession: make(map[int]uint32),
 		}
 
 		if fname != "" {
@@ -179,18 +179,18 @@ func (s *Server) Init(arg InitArg, reply *InitReply) error {
 	log.Println("Sending initial...", arg.Client)
 
 	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	session, ok := s.UserSession[arg.Client]
+	session, ok := s.Doc.UserSession[arg.Client]
 
 	if !ok && len(s.Doc.Colors) >= MAXUSERS {
 		reply.Err = "Full"
+		s.mu.Unlock()
 		return nil
 	}
+	s.mu.Unlock()
 
 	if session != arg.Session {
 		// new session
-		s.handleOp([]Op{Op{Type: Init, Session: arg.Session, Client: arg.Client, Seq: s.Doc.UserSeqs[arg.Client] + 1}})
+		s.handleOp([]Op{Op{Type: Init, Session: arg.Session, Client: arg.Client}})
 
 		// marshal document and send back
 		buf, err := docToBytes(&s.Doc)
@@ -298,13 +298,10 @@ func (s *Server) update() {
 
 		// append to commit log
 		for _, c := range ops {
-			if c.Seq == s.Doc.UserSeqs[c.Client]+1 {
+			if s.Doc.apply(c, false) {
+				// append to commitlog if op is applicable
 				s.CommitLog = append(s.CommitLog, c)
 				s.CommitPoint++
-
-				s.Doc.apply(c, false)
-				s.Doc.UserSeqs[c.Client]++
-				s.Doc.View++
 			}
 			if s.UserViews[c.Client] < c.View && c.Type != Init {
 				// only update UserView if not Init

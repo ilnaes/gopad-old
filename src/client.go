@@ -234,13 +234,11 @@ func (gp *gopad) applyCommits(commits []Op, session uint32, ck int) bool {
 
 	for _, op := range commits {
 		// gp.status = fmt.Sprintf("%d %v", gp.doc.Seqs[op.Client], commits)
-		if op.Seq == gp.doc.UserSeqs[op.Client]+1 {
+		if gp.doc.apply(op, false) {
 			// apply op and update commitpoint
-			gp.doc.apply(op, false)
-			gp.doc.View++
 
 			if op.Type == Init {
-				if gp.doc.UserSeqs[op.Client] == 0 {
+				if gp.doc.UserSeqs[op.Client] == 1 {
 					gp.numusers++
 				}
 
@@ -248,7 +246,6 @@ func (gp *gopad) applyCommits(commits []Op, session uint32, ck int) bool {
 					res = true
 				}
 			}
-			gp.doc.UserSeqs[op.Client]++
 		}
 	}
 

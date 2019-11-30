@@ -41,23 +41,24 @@ type Pos struct {
 }
 
 type Doc struct {
-	Rows     []erow
-	View     uint32
-	Colors   map[int]int
-	Users    []string     // starting username (not implemented)
-	UserPos  map[int]*Pos // position of users in document
-	UserSeqs map[int]uint32
+	Rows        []erow
+	View        uint32
+	Colors      map[int]int
+	Users       []string     // starting username (not implemented)
+	UserPos     map[int]*Pos // position of users in document
+	UserSeqs    map[int]uint32
+	UserSession map[int]uint32
 }
 
 // transport version of doc
 type Doc_t struct {
-	Users    []string
-	Rows     []erow
-	View     uint32
-	Colors   map[int]int
-	UserPos  map[int]Pos // position of users in document
-	UserSeqs map[int]uint32
-	Id       uint32
+	Users       []string
+	Rows        []erow
+	View        uint32
+	Colors      map[int]int
+	UserPos     map[int]Pos // position of users in document
+	UserSeqs    map[int]uint32
+	UserSession map[int]uint32
 }
 
 type Op struct {
@@ -173,6 +174,7 @@ func (doc *Doc) dup() *Doc {
 	d.UserSeqs = make(map[int]uint32)
 	d.Users = make([]string, len(doc.Users))
 	d.Colors = make(map[int]int)
+	d.UserSession = make(map[int]uint32)
 
 	copy(d.Users, doc.Users)
 
@@ -182,6 +184,10 @@ func (doc *Doc) dup() *Doc {
 
 	for k, v := range doc.UserSeqs {
 		d.UserSeqs[k] = v
+	}
+
+	for k, v := range doc.UserSession {
+		d.UserSession[k] = v
 	}
 
 	d.UserPos = make(map[int]*Pos)
@@ -208,6 +214,7 @@ func docToBytes(doc *Doc) ([]byte, error) {
 	d.UserSeqs = make(map[int]uint32)
 	d.Users = make([]string, len(doc.Users))
 	d.Colors = make(map[int]int)
+	d.UserSession = make(map[int]uint32)
 
 	copy(d.Users, doc.Users)
 
@@ -217,6 +224,10 @@ func docToBytes(doc *Doc) ([]byte, error) {
 
 	for k, v := range doc.UserSeqs {
 		d.UserSeqs[k] = v
+	}
+
+	for k, v := range doc.UserSession {
+		d.UserSession[k] = v
 	}
 
 	var b bytes.Buffer
@@ -251,6 +262,7 @@ func bytesToDoc(b []byte, d *Doc) error {
 
 	d.UserSeqs = doc.UserSeqs
 	d.Users = doc.Users
+	d.UserSession = doc.UserSession
 
 	d.UserPos = make(map[int]*Pos)
 	d.Colors = make(map[int]int)
@@ -267,25 +279,37 @@ func bytesToDoc(b []byte, d *Doc) error {
 	return err
 }
 
-// Update commited ops
-func (doc *Doc) apply(op Op, temp bool) {
-	switch op.Type {
-	case Insert:
-		editorInsertRune(doc, op.Client, op.Data, temp)
-	case Init:
-		if doc.UserSeqs[op.Client] == 0 {
-			doc.Colors[op.Client] = len(doc.Colors) + 1
+// Update commited ops if possible and return whether applied
+func (doc *Doc) apply(op Op, temp bool) bool {
+	if op.Seq == doc.UserSeqs[op.Client]+1 || (op.Type == Init && op.Session != doc.UserSession[op.Client]) {
+		switch op.Type {
+		case Insert:
+			editorInsertRune(doc, op.Client, op.Data, temp)
+			break
+		case Init:
+			if doc.UserSeqs[op.Client] == 0 {
+				doc.Colors[op.Client] = len(doc.Colors) + 1
+			}
+			doc.UserPos[op.Client] = &Pos{}
+			break
+		case Move:
+			editorMoveCursor(doc, op.Client, op.Move)
+			break
+		case Delete:
+			editorDelRune(doc, op.Client)
+			break
+		case Newline:
+			editorInsertNewLine(doc, op.Client)
+			break
+		default:
+			return false
 		}
-		doc.UserPos[op.Client] = &Pos{}
-	case Move:
-		editorMoveCursor(doc, op.Client, op.Move)
-	case Delete:
-		editorDelRune(doc, op.Client)
-	case Newline:
-		editorInsertNewLine(doc, op.Client)
-	default:
-		break
+
+		doc.View++
+		doc.UserSeqs[op.Client]++
+		return true
 	}
+	return false
 }
 
 /*** input ***/
@@ -520,15 +544,15 @@ func editorRowCxToRx(row *erow, atx int) int {
 }
 
 func editorRowRxToCx(row *erow, rx int) int {
-	cur_rx := 0
+	curRx := 0
 	cx := 0
 	for ; cx < len(row.Chars); cx++ {
 		if row.Chars[cx] == '\t' {
-			cur_rx += (TABSTOP - 1) - (cur_rx % TABSTOP)
+			curRx += (TABSTOP - 1) - (curRx % TABSTOP)
 		}
-		cur_rx++
+		curRx++
 
-		if cur_rx > rx {
+		if curRx > rx {
 			return cx
 		}
 	}
