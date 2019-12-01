@@ -27,6 +27,7 @@ import "net"
 import "encoding/json"
 import "sync"
 import "fmt"
+import "log"
 import "math/rand"
 import "time"
 
@@ -138,7 +139,7 @@ func (px *Paxos) Recover(data []byte) {
 	// decoder := gob.NewDecoder(bytes.NewBufferString(s))
 	// decoder.Decode(&p)
 	if json.Unmarshal(data, &p) != nil {
-		// TODO
+		log.Fatal("Bad Paxos decode")
 	}
 
 	// px.base = p.Hi + 1
@@ -156,6 +157,7 @@ func (px *Paxos) Recover(data []byte) {
 	if px.printing && Debug {
 		fmt.Printf("RECOVERING PAXOS!  %d %d\n", px.me, px.Hi)
 	}
+	px.recovery = false
 
 	px.mu.Unlock()
 }

@@ -108,6 +108,7 @@ type QueryReply struct {
 type RecoverReply struct {
 	Srv []byte
 	Px  []byte
+	Doc []byte
 	Err Err
 }
 
@@ -209,7 +210,8 @@ func docToBytes(doc *Doc) ([]byte, error) {
 	// need to dereference map targets to send
 	d.UserPos = make(map[int]Pos)
 	for k, v := range doc.UserPos {
-		d.UserPos[k] = *v
+		y := v
+		d.UserPos[k] = *y
 	}
 	d.UserSeqs = make(map[int]uint32)
 	d.Users = make([]string, len(doc.Users))

@@ -37,7 +37,7 @@ type Server struct {
 
 	// data
 	// Doc.UserSession  map[int]uint32 // xid of current user session
-	Doc          Doc
+	doc          Doc
 	CommitLog    []Op
 	UserViews    map[int]uint32 // last reported view number by user
 	CommitPoint  uint32         // the upper bound of our commit log (in absolute terms)
@@ -57,12 +57,12 @@ func (s *Server) Copy(args *RecoverArg, reply *RecoverReply) error {
 
 		reply.Srv, _ = json.Marshal(s)
 		reply.Px, _ = json.Marshal(s.px)
+		reply.Doc, _ = docToBytes(&s.doc)
 
 		reply.Err = "OK"
 
 		s.px.Unlock()
 		s.mu.Unlock()
-		log.Println("HERE")
 	} else {
 		reply.Err = "REBOOTING"
 	}
@@ -77,21 +77,28 @@ func (s *Server) Recover(servers []string) {
 
 	for !done {
 		for i, srv := range servers {
-			log.Println(i, srv, s.me)
 			if i != s.me {
 				ok := call(srv, "Server.Copy", RecoverArg{}, &reply, false)
-				log.Println(reply.Err)
 				if ok && reply.Err == "OK" {
 					json.Unmarshal(reply.Srv, &tmp)
 					s.px.Recover(reply.Px)
 					done = true
+					break
 				}
 			}
 			time.Sleep(updateDelay)
 		}
 	}
 
+	s.CommitLog = tmp.CommitLog
+	s.UserViews = tmp.UserViews
+	s.CommitPoint = tmp.CommitPoint
+	s.DiscardPoint = tmp.DiscardPoint
 	s.StartSeq = tmp.StartSeq
+	s.QuerySeq = tmp.QuerySeq
+	s.ViewSeqs = tmp.ViewSeqs
+
+	bytesToDoc(reply.Doc, &s.doc)
 }
 
 func NewServer(fname string, reboot bool, port int, servers []string, me int) *Server {
@@ -109,7 +116,7 @@ func NewServer(fname string, reboot bool, port int, servers []string, me int) *S
 		s.ViewSeqs = make([]ViewSeq, 0)
 
 		// new document, so start fresh
-		s.Doc = Doc{
+		s.doc = Doc{
 			UserSeqs:    make(map[int]uint32),
 			UserPos:     make(map[int]*Pos),
 			Colors:      make(map[int]int),
@@ -124,7 +131,7 @@ func NewServer(fname string, reboot bool, port int, servers []string, me int) *S
 			defer file.Close()
 			scanner := bufio.NewScanner(file)
 			for scanner.Scan() {
-				s.Doc.Rows = append(s.Doc.Rows,
+				s.doc.Rows = append(s.doc.Rows,
 					erow{
 						Chars:  scanner.Text(),
 						Temp:   make([]bool, len(scanner.Text())),
@@ -133,7 +140,7 @@ func NewServer(fname string, reboot bool, port int, servers []string, me int) *S
 			}
 		} else {
 			// empty first row
-			s.Doc.Rows = append(s.Doc.Rows,
+			s.doc.Rows = append(s.doc.Rows,
 				erow{
 					Chars:  "",
 					Temp:   make([]bool, 0),
@@ -177,11 +184,10 @@ func (s *Server) handleOp(ops []Op) {
 
 func (s *Server) Init(arg InitArg, reply *InitReply) error {
 	log.Println("Sending initial...", arg.Client)
-
 	s.mu.Lock()
-	session, ok := s.Doc.UserSession[arg.Client]
+	session, ok := s.doc.UserSession[arg.Client]
 
-	if !ok && len(s.Doc.Colors) >= MAXUSERS {
+	if !ok && len(s.doc.Colors) >= MAXUSERS {
 		reply.Err = "Full"
 		s.mu.Unlock()
 		return nil
@@ -192,7 +198,7 @@ func (s *Server) Init(arg InitArg, reply *InitReply) error {
 		s.handleOp([]Op{Op{Type: Init, Session: arg.Session, Client: arg.Client}})
 
 		// marshal document and send back
-		buf, err := docToBytes(&s.Doc)
+		buf, err := docToBytes(&s.doc)
 		if err != nil {
 			log.Println("Couldn't send document", err)
 			reply.Err = "Encode"
@@ -249,7 +255,7 @@ func (s *Server) Handle(arg OpArg, reply *OpReply) error {
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if ops[0].Seq > s.Doc.UserSeqs[ops[0].Client]+1 {
+	if ops[0].Seq > s.doc.UserSeqs[ops[0].Client]+1 {
 		// sequence number larger than expected
 		reply.Err = "High"
 		return nil
@@ -271,7 +277,7 @@ func (s *Server) Handle(arg OpArg, reply *OpReply) error {
 		}
 	}
 
-	if ops[len(ops)-1].Seq > s.Doc.UserSeqs[ops[0].Client] {
+	if ops[len(ops)-1].Seq > s.doc.UserSeqs[ops[0].Client] {
 		// there is a new op
 		s.handleOp(ops)
 	}
@@ -298,7 +304,7 @@ func (s *Server) update() {
 
 		// append to commit log
 		for _, c := range ops {
-			if s.Doc.apply(c, false) {
+			if s.doc.apply(c, false) {
 				// append to commitlog if op is applicable
 				s.CommitLog = append(s.CommitLog, c)
 				s.CommitPoint++
@@ -314,6 +320,9 @@ func (s *Server) update() {
 
 		s.ViewSeqs = append(s.ViewSeqs, ViewSeq{View: viewMax, Seq: s.QuerySeq})
 		s.QuerySeq++
+		if s.StartSeq < s.QuerySeq {
+			s.StartSeq = s.QuerySeq
+		}
 
 		var min uint32
 		for _, v := range s.UserViews {
@@ -342,7 +351,6 @@ func (s *Server) processDone(view uint32) {
 		} else {
 			if s.ViewSeqs[0].View <= view {
 				s.px.Done(s.ViewSeqs[0].Seq)
-				log.Println(s.UserViews)
 				s.ViewSeqs = s.ViewSeqs[1:]
 			} else {
 				break
