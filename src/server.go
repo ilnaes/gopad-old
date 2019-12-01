@@ -186,7 +186,6 @@ func (s *Server) Init(arg InitArg, reply *InitReply) error {
 		s.mu.Unlock()
 		return nil
 	}
-	s.mu.Unlock()
 
 	if session != arg.Session {
 		// new session
@@ -205,6 +204,7 @@ func (s *Server) Init(arg InitArg, reply *InitReply) error {
 		reply.Err = "Duplicate"
 	}
 
+	s.mu.Unlock()
 	return nil
 }
 
@@ -315,8 +315,6 @@ func (s *Server) update() {
 		s.ViewSeqs = append(s.ViewSeqs, ViewSeq{View: viewMax, Seq: s.QuerySeq})
 		s.QuerySeq++
 
-		s.processDone()
-
 		var min uint32
 		for _, v := range s.UserViews {
 			if min == 0 {
@@ -329,12 +327,28 @@ func (s *Server) update() {
 			s.CommitLog = s.CommitLog[min-s.DiscardPoint:]
 			s.DiscardPoint = min
 		}
+
+		s.processDone(min)
+
 		s.mu.Unlock()
 		time.Sleep(updateDelay)
 	}
 }
 
-func (s *Server) processDone() {
+func (s *Server) processDone(view uint32) {
+	for {
+		if len(s.ViewSeqs) == 0 {
+			break
+		} else {
+			if s.ViewSeqs[0].View <= view {
+				s.px.Done(s.ViewSeqs[0].Seq)
+				log.Println(s.UserViews)
+				s.ViewSeqs = s.ViewSeqs[1:]
+			} else {
+				break
+			}
+		}
+	}
 }
 
 func (s *Server) Start() {
