@@ -118,7 +118,7 @@ func NewServer(fname string, reboot bool, port int, servers []string, me int) *S
 		// new document, so start fresh
 		s.doc = Doc{
 			UserSeqs:    make(map[int]uint32),
-			UserPos:     make(map[int]*Pos),
+			UserPos:     make(map[int]Pos),
 			Colors:      make(map[int]int),
 			UserSession: make(map[int]uint32),
 		}

@@ -44,22 +44,22 @@ type Doc struct {
 	Rows        []erow
 	View        uint32
 	Colors      map[int]int
-	Users       []string     // starting username (not implemented)
-	UserPos     map[int]*Pos // position of users in document
+	Users       []string    // starting username (not implemented)
+	UserPos     map[int]Pos // position of users in document
 	UserSeqs    map[int]uint32
 	UserSession map[int]uint32
 }
 
 // transport version of doc
-type Doc_t struct {
-	Users       []string
-	Rows        []erow
-	View        uint32
-	Colors      map[int]int
-	UserPos     map[int]Pos // position of users in document
-	UserSeqs    map[int]uint32
-	UserSession map[int]uint32
-}
+// type Doc_t struct {
+// 	Users       []string
+// 	Rows        []erow
+// 	View        uint32
+// 	Colors      map[int]int
+// 	UserPos     map[int]Pos // position of users in document
+// 	UserSeqs    map[int]uint32
+// 	UserSession map[int]uint32
+// }
 
 type Op struct {
 	Type int
@@ -191,51 +191,49 @@ func (doc *Doc) dup() *Doc {
 		d.UserSession[k] = v
 	}
 
-	d.UserPos = make(map[int]*Pos)
+	d.UserPos = make(map[int]Pos)
 	for k, v := range doc.UserPos {
-		pos := *v
-		d.UserPos[k] = &pos
+		d.UserPos[k] = v
 	}
 	return &d
 }
 
 // convert doc to byte array
 func docToBytes(doc *Doc) ([]byte, error) {
-	d := Doc_t{View: doc.View}
-	d.Rows = make([]erow, len(doc.Rows))
-	for i := 0; i < len(d.Rows); i++ {
-		d.Rows[i] = *doc.Rows[i].copy()
-	}
+	// d := Doc_t{View: doc.View}
+	// d.Rows = make([]erow, len(doc.Rows))
+	// for i := 0; i < len(d.Rows); i++ {
+	// 	d.Rows[i] = *doc.Rows[i].copy()
+	// }
 
-	// need to dereference map targets to send
-	d.UserPos = make(map[int]Pos)
-	for k, v := range doc.UserPos {
-		y := v
-		d.UserPos[k] = *y
-	}
-	d.UserSeqs = make(map[int]uint32)
-	d.Users = make([]string, len(doc.Users))
-	d.Colors = make(map[int]int)
-	d.UserSession = make(map[int]uint32)
+	// // need to dereference map targets to send
+	// d.UserPos = make(map[int]Pos)
+	// for k, v := range doc.UserPos {
+	// 	d.UserPos[k] = v
+	// }
+	// d.UserSeqs = make(map[int]uint32)
+	// d.Users = make([]string, len(doc.Users))
+	// d.Colors = make(map[int]int)
+	// d.UserSession = make(map[int]uint32)
 
-	copy(d.Users, doc.Users)
+	// copy(d.Users, doc.Users)
 
-	for k, v := range doc.Colors {
-		d.Colors[k] = v
-	}
+	// for k, v := range doc.Colors {
+	// 	d.Colors[k] = v
+	// }
 
-	for k, v := range doc.UserSeqs {
-		d.UserSeqs[k] = v
-	}
+	// for k, v := range doc.UserSeqs {
+	// 	d.UserSeqs[k] = v
+	// }
 
-	for k, v := range doc.UserSession {
-		d.UserSession[k] = v
-	}
+	// for k, v := range doc.UserSession {
+	// 	d.UserSession[k] = v
+	// }
 
 	var b bytes.Buffer
 
 	enc := gob.NewEncoder(&b)
-	err := enc.Encode(d)
+	err := enc.Encode(doc)
 
 	if err != nil {
 		panic(err)
@@ -248,35 +246,33 @@ func docToBytes(doc *Doc) ([]byte, error) {
 func bytesToDoc(b []byte, d *Doc) error {
 	buf := bytes.NewBuffer(b)
 
-	var doc Doc_t
 	dec := gob.NewDecoder(buf)
-	err := dec.Decode(&doc)
+	err := dec.Decode(d)
 	if err != nil {
 		log.Fatal("decode:", err)
 	}
 
-	d.View = doc.View
+	// d.View = doc.View
 
-	d.Rows = make([]erow, len(doc.Rows))
-	for i := 0; i < len(d.Rows); i++ {
-		d.Rows[i] = *doc.Rows[i].copy()
-	}
+	// d.Rows = make([]erow, len(doc.Rows))
+	// for i := 0; i < len(d.Rows); i++ {
+	// 	d.Rows[i] = *doc.Rows[i].copy()
+	// }
 
-	d.UserSeqs = doc.UserSeqs
-	d.Users = doc.Users
-	d.UserSession = doc.UserSession
+	// d.UserSeqs = doc.UserSeqs
+	// d.Users = doc.Users
+	// d.UserSession = doc.UserSession
 
-	d.UserPos = make(map[int]*Pos)
-	d.Colors = make(map[int]int)
+	// d.UserPos = make(map[int]Pos)
+	// d.Colors = make(map[int]int)
 
-	for k, v := range doc.Colors {
-		d.Colors[k] = v
-	}
+	// for k, v := range doc.Colors {
+	// 	d.Colors[k] = v
+	// }
 
-	for k, v := range doc.UserPos {
-		x := v
-		d.UserPos[k] = &x
-	}
+	// for k, v := range doc.UserPos {
+	// 	d.UserPos[k] = v
+	// }
 
 	return err
 }
@@ -292,7 +288,7 @@ func (doc *Doc) apply(op Op, temp bool) bool {
 			if doc.UserSeqs[op.Client] == 0 {
 				doc.Colors[op.Client] = len(doc.Colors) + 1
 			}
-			doc.UserPos[op.Client] = &Pos{}
+			doc.UserPos[op.Client] = Pos{}
 			break
 		case Move:
 			editorMoveCursor(doc, op.Client, op.Move)
@@ -335,6 +331,7 @@ func editorMoveCursor(doc *Doc, id int, key termbox.Key) {
 			pos.Y++
 			pos.X = 0
 		}
+		doc.UserPos[id] = pos
 		return
 	case termbox.KeyArrowLeft:
 		if pos.X != 0 {
@@ -343,22 +340,27 @@ func editorMoveCursor(doc *Doc, id int, key termbox.Key) {
 			pos.Y--
 			pos.X = len(doc.Rows[pos.Y].Chars)
 		}
+		doc.UserPos[id] = pos
 		return
 	case termbox.KeyArrowDown:
 		if pos.Y < len(doc.Rows)-1 {
 			pos.Y++
 		}
+		doc.UserPos[id] = pos
 	case termbox.KeyArrowUp:
 		if pos.Y != 0 {
 			pos.Y--
 		}
+		doc.UserPos[id] = pos
 	case termbox.KeyHome:
 		pos.X = 0
+		doc.UserPos[id] = pos
 		return
 	case termbox.KeyEnd:
 		if pos.Y < len(doc.Rows) {
 			pos.X = len(doc.Rows[pos.Y].Chars)
 		}
+		doc.UserPos[id] = pos
 		return
 	}
 
@@ -374,6 +376,7 @@ func editorMoveCursor(doc *Doc, id int, key termbox.Key) {
 	} else {
 		pos.X = editorRowRxToCx(&doc.Rows[pos.Y], oldRx)
 	}
+	doc.UserPos[id] = pos
 }
 
 /*** editor operations ***/
@@ -393,10 +396,12 @@ func editorInsertRune(doc *Doc, id int, key rune, temp bool) {
 			if pos.Y == npos.Y && pos.X < npos.X {
 				npos.X++
 			}
+			doc.UserPos[k] = npos
 		}
 	}
 
 	pos.X++
+	doc.UserPos[id] = pos
 }
 
 func editorInsertNewLine(doc *Doc, id int) {
@@ -425,11 +430,13 @@ func editorInsertNewLine(doc *Doc, id int) {
 			} else if pos.Y < npos.Y {
 				npos.Y++
 			}
+			doc.UserPos[k] = npos
 		}
 	}
 
 	pos.Y++
 	pos.X = 0
+	doc.UserPos[id] = pos
 }
 
 func editorDelRune(doc *Doc, id int) {
@@ -451,6 +458,7 @@ func editorDelRune(doc *Doc, id int) {
 					npos.X--
 				}
 			}
+			doc.UserPos[k] = npos
 		}
 		pos.X--
 	} else {
@@ -467,12 +475,15 @@ func editorDelRune(doc *Doc, id int) {
 				} else if pos.Y < npos.Y {
 					npos.Y--
 				}
+				doc.UserPos[k] = npos
 			}
 		}
 
 		pos.X = oldOffset
 		pos.Y--
 	}
+
+	doc.UserPos[id] = pos
 }
 
 /*** row operations ***/

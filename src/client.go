@@ -5,7 +5,7 @@ package gopad
 
 import (
 	"encoding/json"
-	// "fmt"
+	"fmt"
 	"github.com/nsf/termbox-go"
 	"log"
 	"math/rand"
@@ -73,6 +73,7 @@ mainloop:
 	for {
 		gp.refreshScreen()
 		ev := termbox.PollEvent()
+		gp.status = fmt.Sprintf("%v", ev.Key)
 
 		switch ev.Type {
 		case termbox.EventKey:
@@ -205,8 +206,7 @@ func (gp *gopad) pull(testing bool) {
 
 				gp.tempdoc = *gp.doc.dup()
 				for k, v := range gp.doc.UserPos {
-					x := *v
-					gp.tempdoc.UserPos[k] = &x
+					gp.tempdoc.UserPos[k] = v
 				}
 				// apply ops not yet commited
 				for _, op := range gp.selfOps {
