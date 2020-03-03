@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"math/rand"
 	// "os"
-	"github.com/ilnaes/gopad/src"
+	"github.com/ilnaes/gopad-old/src"
 	"time"
 	// "sync"
 )
